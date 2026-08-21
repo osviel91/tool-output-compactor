@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any
 
 
@@ -52,6 +53,11 @@ class ToolSlimPlugin:
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
             return None
+        if os.environ.get("TOOL_SLIM_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+            print(
+                f"[tool-slim] compacting tool={tool_name or 'unknown'} raw_chars={len(text)} target_chars={max_chars}",
+                file=sys.stderr,
+            )
         return self._compact(
             tool_name or "unknown",
             text,
