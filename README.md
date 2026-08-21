@@ -41,16 +41,28 @@ TOOL_SLIM_JSON_MAX_ITEMS=20
 
 ## Install Sketch
 
-Copy this directory into the Hermes plugins directory once the exact Hermes plugin registration API is confirmed:
+Copy this directory into the Hermes plugins directory:
 
 ```bash
 cp -R tool-slim ~/.hermes/plugins/tool-slim
 ```
 
-Then enable the plugin according to the current Hermes plugin system.
+Then enable it in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - tool-slim
+```
 
 ## Current State
 
-The code includes a working deterministic compactor and a flexible `transform_tool_result` method, but the exact Hermes hook signature still needs to be verified against the recent Hermes release.
+The code uses Hermes' native plugin hook registration:
+
+```python
+ctx.register_hook("transform_tool_result", callback)
+```
+
+Hermes calls the hook with keyword arguments including `tool_name`, `args`, `result`, ids, duration and status fields. Returning a string replaces the tool result in model context; returning `None` leaves it unchanged.
 
 See `AGENTS.md` and `PLAN.md` before continuing.

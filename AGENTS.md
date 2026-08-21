@@ -25,20 +25,25 @@ Do not add fast-brain API calls in V1.
 - `PLAN.md`: implementation roadmap.
 - `AGENTS.md`: this handoff.
 
-## Unknowns To Resolve First
+## Hermes Hook Contract
 
-Before serious integration, inspect Hermes source/docs for:
+Confirmed against `NousResearch/hermes-agent`:
 
-- exact `transform_tool_result` signature;
-- plugin registration method for non-memory plugins;
-- whether hook methods can be sync only or async;
-- expected return type;
-- whether `plugin.yaml` hook declaration is enough.
+- Register with `ctx.register_hook("transform_tool_result", callback)`.
+- Hermes passes keyword arguments including `tool_name`, `args`, `result`, ids, `duration_ms`, `status`, `error_type` and `error_message`.
+- Return a `str` to replace the tool result; return `None` to leave it unchanged.
+- `plugin.yaml` declares the hook, but `register()` must register it.
 
-The current method is intentionally flexible:
+Current method:
 
 ```python
-def transform_tool_result(self, *args: Any, **kwargs: Any) -> Any:
+def transform_tool_result(
+    self,
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    **_: Any,
+) -> str | None:
 ```
 
 Adapt it once the real contract is known.
@@ -64,4 +69,4 @@ The second command runs minimal self-checks.
 
 ## Next Agent First Task
 
-Confirm Hermes' `transform_tool_result` hook signature and update `register()`/method signature accordingly.
+Test in a live Hermes profile and tune defaults if useful details are missing from compacted outputs.

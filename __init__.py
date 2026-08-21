@@ -34,28 +34,21 @@ class ToolSlimPlugin:
     def name(self) -> str:
         return "tool-slim"
 
-    def transform_tool_result(self, *args: Any, **kwargs: Any) -> Any:
+    def transform_tool_result(
+        self,
+        tool_name: str = "",
+        args: Any = None,
+        result: Any = None,
+        **_: Any,
+    ) -> str | None:
         if os.environ.get("TOOL_SLIM_ENABLED", "true").lower() in {"0", "false", "no", "off"}:
-            return args[1] if len(args) > 1 else kwargs.get("result")
+            return None
 
-        tool_name, result = self._parse_call(args, kwargs)
         text = self._to_text(result)
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
-            return result
-        return self._compact(tool_name, text, max_chars)
-
-    def _parse_call(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[str, Any]:
-        tool_name = str(kwargs.get("tool_name") or kwargs.get("name") or "")
-        result = kwargs.get("result")
-
-        if len(args) >= 2 and isinstance(args[0], str):
-            tool_name = args[0]
-            result = args[1]
-        elif args:
-            result = args[0]
-
-        return tool_name or "unknown", result
+            return None
+        return self._compact(tool_name or "unknown", text, max_chars)
 
     def _to_text(self, result: Any) -> str:
         if isinstance(result, str):
@@ -143,29 +136,25 @@ class ToolSlimPlugin:
 
 def register(ctx: Any) -> None:
     plugin = ToolSlimPlugin()
-    if hasattr(ctx, "register_plugin"):
-        ctx.register_plugin(plugin)
-    elif hasattr(ctx, "register_tool_result_transformer"):
-        ctx.register_tool_result_transformer(plugin)
-    else:
-        # Exact Hermes registration API for transform_tool_result still needs confirmation.
-        setattr(ctx, "tool_slim_plugin", plugin)
+    ctx.register_hook("transform_tool_result", plugin.transform_tool_result)
 
 
 def _demo() -> None:
     plugin = ToolSlimPlugin()
     small = "ok"
-    assert plugin.transform_tool_result("terminal", small) == small
+    assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
 
     large = "line\n" * 2000 + "ERROR: useful failure\n" + "tail\n" * 2000
-    compact = plugin.transform_tool_result("terminal", large)
+    compact = plugin.transform_tool_result(tool_name="terminal", result=large)
+    assert compact is not None
     assert "[tool-slim compacted tool result]" in compact
     assert "ERROR: useful failure" in compact
     assert len(compact) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
 
-    data = {"items": list(range(100)), "status": "ok"}
-    compact_json = plugin.transform_tool_result("api", data)
-    assert "JSON object" in compact_json or compact_json == data
+    data = {"items": list(range(2000)), "status": "ok"}
+    compact_json = plugin.transform_tool_result(tool_name="api", result=data)
+    assert compact_json is not None
+    assert "JSON object" in compact_json
 
 
 if __name__ == "__main__":

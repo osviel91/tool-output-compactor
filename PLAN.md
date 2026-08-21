@@ -2,30 +2,30 @@
 
 ## Phase 1: Confirm Hermes Hook
 
-Find the exact `transform_tool_result` contract in Hermes.
+Confirmed against `NousResearch/hermes-agent`.
 
-Questions to answer:
+Contract:
 
-- What method name is called?
-- What arguments are passed?
-- Does Hermes expect string, dict or original result type back?
-- Is the hook synchronous or async?
-- How is a non-memory plugin registered?
-- Can plugins declare `transform_tool_result` in `plugin.yaml` only, or is code registration required?
+- Plugins register with `ctx.register_hook("transform_tool_result", callback)`.
+- Hermes calls the callback with keyword arguments: `tool_name`, `args`, `result`, ids, `duration_ms`, `status`, `error_type` and `error_message`.
+- The hook runs after `post_tool_call` and before appending the result back into conversation context.
+- The first returned `str` replaces the result.
+- `None` or non-string returns leave the result unchanged.
+- Hook errors are fail-open.
+- `plugin.yaml` declares hooks, but code registration is still required.
 
-Expected shape might be one of:
-
-```python
-def transform_tool_result(self, tool_name: str, result: Any, **kwargs: Any) -> Any:
-    ...
-```
+Implemented shape:
 
 ```python
-def transform_tool_result(self, result: Any, *, tool_name: str = "", **kwargs: Any) -> Any:
+def transform_tool_result(
+    self,
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    **_: Any,
+) -> str | None:
     ...
 ```
-
-The current implementation accepts flexible `*args, **kwargs` so it can be adapted quickly.
 
 ## Phase 2: Deterministic Compaction
 
