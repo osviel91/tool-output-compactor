@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Preserve critical lines inside JSON string fields such as terminal `output`.
+- Preserve non-empty critical JSON fields such as `stderr`, `error`, `traceback` and non-zero exit codes before compacted previews.
+
 ## 0.2.2
 
 - Emit an INFO log whenever a tool result is compacted, including tool, sizes, mode and status.

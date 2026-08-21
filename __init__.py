@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 
 logger = logging.getLogger("tool-slim")
@@ -30,6 +30,16 @@ IMPORTANT_MARKERS = (
     "exit_code",
     "stderr",
 )
+
+CRITICAL_KEYS = {
+    "error",
+    "stderr",
+    "traceback",
+    "exception",
+    "exit_code",
+    "returncode",
+    "status",
+}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -106,10 +116,15 @@ class ToolSlimPlugin:
         parsed = self._try_json(text)
         if parsed is not None:
             deterministic_body = self._compact_json(parsed)
+            important = self._important_from_value(parsed, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
         else:
             deterministic_body = self._compact_text(text)
+            important = self._important_lines(text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
 
-        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars)
+        if important:
+            deterministic_body = "Preserved critical lines:\n" + "\n".join(important) + "\n\n---\n\n" + deterministic_body
+
+        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, important)
         mode = "llm" if llm_body else "deterministic"
         body = llm_body or deterministic_body
 
@@ -164,6 +179,7 @@ class ToolSlimPlugin:
         raw_text: str,
         deterministic_body: str,
         max_chars: int,
+        important: list[str],
     ) -> str | None:
         if not _env_bool("TOOL_SLIM_LLM_ENABLED"):
             return None
@@ -172,7 +188,6 @@ class ToolSlimPlugin:
         if not base_url or not model:
             return None
 
-        important = self._important_lines(raw_text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
         budget = _env_int("TOOL_SLIM_LLM_MAX_CHARS", max(800, max_chars // 2))
         prompt = self._llm_prompt(tool_name, deterministic_body, budget)
         try:
@@ -286,6 +301,41 @@ class ToolSlimPlugin:
                     break
         return lines
 
+    def _important_from_value(self, value: Any, limit: int) -> list[str]:
+        lines: list[str] = []
+
+        def add(line: str) -> None:
+            if line and line not in lines and len(lines) < limit:
+                lines.append(line[:1000])
+
+        def visit(item: Any, path: str, depth: int) -> None:
+            if len(lines) >= limit or depth > 8:
+                return
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    key_lower = str(key).lower()
+                    if key_lower in CRITICAL_KEYS and child not in (None, "", [], {}, 0, "0", "ok", "success"):
+                        add(f"{child_path}: {self._one_line(self._to_text(child), 1000)}")
+                    visit(child, child_path, depth + 1)
+                return
+            if isinstance(item, list):
+                for index, child in enumerate(item):
+                    visit(child, f"{path}[{index}]", depth + 1)
+                    if len(lines) >= limit:
+                        break
+                return
+            if isinstance(item, str):
+                for line in item.splitlines() or [item]:
+                    lower = line.lower()
+                    if any(marker in lower for marker in IMPORTANT_MARKERS):
+                        add(f"{path}: {line}" if path else line)
+                        if len(lines) >= limit:
+                            break
+
+        visit(value, "", 0)
+        return lines
+
 
 def register(ctx: Any) -> None:
     plugin = ToolSlimPlugin()
@@ -329,6 +379,11 @@ def _demo() -> None:
     compact_json = plugin.transform_tool_result(tool_name="api", result=data)
     assert compact_json is not None
     assert "JSON object" in compact_json
+
+    noisy_json = {"output": "normal line\n" * 250 + "ERROR: compact-test-marker\n" + "normal line\n" * 250, "exit_code": 0, "error": None}
+    compact_json_error = plugin.transform_tool_result(tool_name="terminal", result=noisy_json)
+    assert compact_json_error is not None
+    assert "ERROR: compact-test-marker" in compact_json_error
 
     os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
     os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
