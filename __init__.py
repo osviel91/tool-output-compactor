@@ -39,6 +39,10 @@ class ToolSlimPlugin:
         tool_name: str = "",
         args: Any = None,
         result: Any = None,
+        duration_ms: int | None = None,
+        status: str = "",
+        error_type: str = "",
+        error_message: str = "",
         **_: Any,
     ) -> str | None:
         if os.environ.get("TOOL_SLIM_ENABLED", "true").lower() in {"0", "false", "no", "off"}:
@@ -48,7 +52,15 @@ class ToolSlimPlugin:
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
             return None
-        return self._compact(tool_name or "unknown", text, max_chars)
+        return self._compact(
+            tool_name or "unknown",
+            text,
+            max_chars,
+            duration_ms=duration_ms,
+            status=status,
+            error_type=error_type,
+            error_message=error_message,
+        )
 
     def _to_text(self, result: Any) -> str:
         if isinstance(result, str):
@@ -58,20 +70,39 @@ class ToolSlimPlugin:
         except TypeError:
             return str(result)
 
-    def _compact(self, tool_name: str, text: str, max_chars: int) -> str:
+    def _compact(
+        self,
+        tool_name: str,
+        text: str,
+        max_chars: int,
+        *,
+        duration_ms: int | None = None,
+        status: str = "",
+        error_type: str = "",
+        error_message: str = "",
+    ) -> str:
         parsed = self._try_json(text)
         if parsed is not None:
             body = self._compact_json(parsed)
         else:
             body = self._compact_text(text)
 
-        header = (
-            "[tool-slim compacted tool result]\n"
-            f"tool: {tool_name}\n"
-            f"raw_chars: {len(text)}\n"
-            f"target_chars: {max_chars}\n"
-            f"omitted_chars_estimate: {max(0, len(text) - len(body))}\n\n"
-        )
+        header_lines = [
+            "[tool-slim compacted tool result]",
+            f"tool: {tool_name}",
+            f"raw_chars: {len(text)}",
+            f"target_chars: {max_chars}",
+            f"omitted_chars_estimate: {max(0, len(text) - len(body))}",
+        ]
+        if status:
+            header_lines.append(f"status: {status}")
+        if duration_ms is not None:
+            header_lines.append(f"duration_ms: {duration_ms}")
+        if error_type:
+            header_lines.append(f"error_type: {error_type}")
+        if error_message:
+            header_lines.append(f"error_message: {self._one_line(error_message, 500)}")
+        header = "\n".join(header_lines) + "\n\n"
         compacted = header + body
         if len(compacted) <= max_chars:
             return compacted
@@ -82,6 +113,10 @@ class ToolSlimPlugin:
             return json.loads(text)
         except (TypeError, ValueError):
             return None
+
+    def _one_line(self, text: str, limit: int) -> str:
+        text = text.replace("\n", " ")
+        return text if len(text) <= limit else text[:limit] + "..."
 
     def _compact_json(self, value: Any, depth: int = 0) -> str:
         max_items = _env_int("TOOL_SLIM_JSON_MAX_ITEMS", 20)
@@ -145,9 +180,16 @@ def _demo() -> None:
     assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
 
     large = "line\n" * 2000 + "ERROR: useful failure\n" + "tail\n" * 2000
-    compact = plugin.transform_tool_result(tool_name="terminal", result=large)
+    compact = plugin.transform_tool_result(
+        tool_name="terminal",
+        result=large,
+        duration_ms=12,
+        status="success",
+    )
     assert compact is not None
     assert "[tool-slim compacted tool result]" in compact
+    assert "status: success" in compact
+    assert "duration_ms: 12" in compact
     assert "ERROR: useful failure" in compact
     assert len(compact) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
 
