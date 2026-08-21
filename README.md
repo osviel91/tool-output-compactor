@@ -1,6 +1,6 @@
 # tool-slim
 
-Hermes plugin concept for compacting large tool results before they are sent back into the model context.
+Hermes plugin for compacting large tool results before they are sent back into the model context.
 
 This is intentionally separate from `fast-brain`:
 
@@ -9,7 +9,7 @@ This is intentionally separate from `fast-brain`:
 
 ## Goal
 
-Small-context agents often fail during long tasks because tool results keep accumulating in the active prompt. `tool-slim` should use Hermes' `transform_tool_result` hook to replace oversized tool results with compact, useful summaries before they re-enter the conversation context.
+Small-context agents often fail during long tasks because tool results keep accumulating in the active prompt. `tool-slim` uses Hermes' `transform_tool_result` hook to replace oversized tool results with compact summaries before they re-enter conversation context.
 
 ```txt
 Tool runs
@@ -18,15 +18,24 @@ Tool runs
   -> compact result goes back to Hermes/model context
 ```
 
-## Non-Goals For V1
+## Behavior
+
+By default, compaction is deterministic and dependency-free:
+
+- Small results are left unchanged.
+- Large plain text keeps important lines, head and tail.
+- Large JSON keeps shape, keys and bounded item previews.
+- Errors, warnings, tracebacks, stderr and exit codes are prioritized.
+- The compacted result always says compaction happened and reports omitted size.
+
+Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-slim` falls back to deterministic compaction.
+
+## Non-Goals
 
 - No database.
 - No embeddings.
-- No LLM summarizer.
 - No dependency on fast-brain.
 - No raw-output archive.
-
-V1 is deterministic and local only.
 
 ## Environment
 
@@ -49,7 +58,18 @@ TOOL_SLIM_LLM_MAX_CHARS=2000
 TOOL_SLIM_LLM_MAX_TOKENS=700
 ```
 
-## Install Sketch
+Example LLM compressor config:
+
+```env
+TOOL_SLIM_LLM_ENABLED=true
+TOOL_SLIM_LLM_BASE_URL=https://omlx.osviel.duckdns.org/v1
+TOOL_SLIM_LLM_MODEL=compressor
+TOOL_SLIM_LLM_API_KEY=your-key-here
+```
+
+Do not commit API keys.
+
+## Install
 
 Copy this directory into the Hermes plugins directory:
 
@@ -64,6 +84,23 @@ plugins:
   enabled:
     - tool-slim
 ```
+
+Validate installation:
+
+```bash
+hermes plugins doctor tool-slim
+```
+
+## Development
+
+Run the built-in checks:
+
+```bash
+python3 -m compileall tool-slim
+python3 tool-slim/__init__.py
+```
+
+The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
 
 ## Current State
 
