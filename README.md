@@ -26,6 +26,7 @@ By default, compaction is deterministic and dependency-free:
 - Large plain text keeps important lines, head and tail.
 - Large JSON keeps shape, keys and bounded item previews.
 - Errors, warnings, tracebacks, stderr and exit codes are prioritized, including inside JSON string fields like terminal `output`.
+- Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
 - The compacted result always says compaction happened and reports omitted size.
 
 Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-slim` falls back to deterministic compaction.

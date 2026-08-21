@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- Preserve action facts separately from compacted noise: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
+- Keep preserved action facts outside the LLM summary so concrete tool actions are not lost or paraphrased away.
+
 ## 0.2.3
 
 - Preserve critical lines inside JSON string fields such as terminal `output`.

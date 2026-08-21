@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 
 logger = logging.getLogger("tool-slim")
@@ -39,6 +39,8 @@ CRITICAL_KEYS = {
     "exit_code",
     "returncode",
     "status",
+    "approval",
+    "command",
 }
 
 
@@ -88,6 +90,7 @@ class ToolSlimPlugin:
             tool_name or "unknown",
             text,
             max_chars,
+            args=args,
             duration_ms=duration_ms,
             status=status,
             error_type=error_type,
@@ -108,6 +111,7 @@ class ToolSlimPlugin:
         text: str,
         max_chars: int,
         *,
+        args: Any = None,
         duration_ms: int | None = None,
         status: str = "",
         error_type: str = "",
@@ -121,10 +125,11 @@ class ToolSlimPlugin:
             deterministic_body = self._compact_text(text)
             important = self._important_lines(text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
 
-        if important:
-            deterministic_body = "Preserved critical lines:\n" + "\n".join(important) + "\n\n---\n\n" + deterministic_body
+        preserved = self._preserved_sections(tool_name, args, parsed, important)
+        if preserved:
+            deterministic_body = preserved + "\n\n---\n\n" + deterministic_body
 
-        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, important)
+        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
         mode = "llm" if llm_body else "deterministic"
         body = llm_body or deterministic_body
 
@@ -179,7 +184,7 @@ class ToolSlimPlugin:
         raw_text: str,
         deterministic_body: str,
         max_chars: int,
-        important: list[str],
+        preserved: str,
     ) -> str | None:
         if not _env_bool("TOOL_SLIM_LLM_ENABLED"):
             return None
@@ -204,8 +209,8 @@ class ToolSlimPlugin:
             summary = summary[:budget] + "..."
 
         parts = []
-        if important:
-            parts.append("Preserved critical lines:\n" + "\n".join(important))
+        if preserved:
+            parts.append(preserved)
         parts.append("LLM summary:\n" + summary)
         return "\n\n---\n\n".join(parts)
 
@@ -336,6 +341,41 @@ class ToolSlimPlugin:
         visit(value, "", 0)
         return lines
 
+    def _preserved_sections(self, tool_name: str, args: Any, parsed: Any, important: list[str]) -> str:
+        facts = self._action_facts(tool_name, args, parsed)
+        sections = []
+        if facts:
+            sections.append("Preserved action facts:\n" + "\n".join(facts))
+        if important:
+            sections.append("Preserved critical lines:\n" + "\n".join(important))
+        return "\n\n".join(sections)
+
+    def _action_facts(self, tool_name: str, args: Any, parsed: Any) -> list[str]:
+        facts: list[str] = []
+
+        def add(label: str, value: Any) -> None:
+            if value in (None, "", [], {}):
+                return
+            line = f"{label}: {self._one_line(self._to_text(value), 1000)}"
+            if line not in facts:
+                facts.append(line)
+
+        if isinstance(args, dict):
+            for key in ("command", "cmd", "path", "file_path", "query"):
+                if key in args:
+                    add(f"args.{key}", args[key])
+        elif args not in (None, ""):
+            add("args", args)
+
+        if isinstance(parsed, dict):
+            for key in ("command", "cmd", "exit_code", "returncode", "stderr", "error", "status", "approval"):
+                if key in parsed:
+                    add(key, parsed[key])
+
+        if tool_name:
+            facts.insert(0, f"tool: {tool_name}")
+        return facts
+
 
 def register(ctx: Any) -> None:
     plugin = ToolSlimPlugin()
@@ -384,6 +424,14 @@ def _demo() -> None:
     compact_json_error = plugin.transform_tool_result(tool_name="terminal", result=noisy_json)
     assert compact_json_error is not None
     assert "ERROR: compact-test-marker" in compact_json_error
+
+    action_json = {"output": "noise\n" * 800, "exit_code": 7, "stderr": "fatal: action failed", "error": None}
+    compact_action = plugin.transform_tool_result(tool_name="terminal", args={"command": "python script.py"}, result=action_json)
+    assert compact_action is not None
+    assert "Preserved action facts" in compact_action
+    assert "args.command: python script.py" in compact_action
+    assert "exit_code: 7" in compact_action
+    assert "stderr: fatal: action failed" in compact_action
 
     os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
     os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
