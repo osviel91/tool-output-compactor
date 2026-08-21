@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import urllib.request
@@ -8,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
+
+
+logger = logging.getLogger("tool-slim")
 
 
 IMPORTANT_MARKERS = (
@@ -105,7 +109,9 @@ class ToolSlimPlugin:
         else:
             deterministic_body = self._compact_text(text)
 
-        body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars) or deterministic_body
+        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars)
+        mode = "llm" if llm_body else "deterministic"
+        body = llm_body or deterministic_body
 
         header_lines = [
             "[tool-slim compacted tool result]",
@@ -122,11 +128,16 @@ class ToolSlimPlugin:
             header_lines.append(f"error_type: {error_type}")
         if error_message:
             header_lines.append(f"error_message: {self._one_line(error_message, 500)}")
+        if _env_bool("TOOL_SLIM_NOTICE_IN_RESULT"):
+            header_lines.append(f"notice: tool-slim compacted this result using {mode} mode")
         header = "\n".join(header_lines) + "\n\n"
         compacted = header + body
         if len(compacted) <= max_chars:
+            self._log_compaction(tool_name, len(text), len(compacted), mode, status)
             return compacted
-        return compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
+        compacted = compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
+        self._log_compaction(tool_name, len(text), len(compacted), mode, status)
+        return compacted
 
     def _try_json(self, text: str) -> Any | None:
         try:
@@ -137,6 +148,15 @@ class ToolSlimPlugin:
     def _one_line(self, text: str, limit: int) -> str:
         text = text.replace("\n", " ")
         return text if len(text) <= limit else text[:limit] + "..."
+
+    def _log_compaction(self, tool_name: str, raw_chars: int, output_chars: int, mode: str, status: str) -> None:
+        message = (
+            f"compacted tool={tool_name} raw_chars={raw_chars} "
+            f"output_chars={output_chars} mode={mode} status={status or 'unknown'}"
+        )
+        logger.info(message)
+        if _env_bool("TOOL_SLIM_DEBUG"):
+            print(f"[tool-slim] {message}", file=sys.stderr)
 
     def _compact_with_llm(
         self,
@@ -298,6 +318,12 @@ def _demo() -> None:
     assert "duration_ms: 12" in compact
     assert "ERROR: useful failure" in compact
     assert len(compact) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
+
+    os.environ["TOOL_SLIM_NOTICE_IN_RESULT"] = "true"
+    compact_notice = plugin.transform_tool_result(tool_name="terminal", result=large)
+    assert compact_notice is not None
+    assert "notice: tool-slim compacted this result" in compact_notice
+    os.environ.pop("TOOL_SLIM_NOTICE_IN_RESULT", None)
 
     data = {"items": list(range(2000)), "status": "ok"}
     compact_json = plugin.transform_tool_result(tool_name="api", result=data)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Emit an INFO log whenever a tool result is compacted, including tool, sizes, mode and status.
+- Add `TOOL_SLIM_NOTICE_IN_RESULT` for an optional in-result notice that compaction happened.
+
 ## 0.2.1
 
 - Raise default LLM compaction timeout to 30 seconds for cold local model loads.

@@ -47,6 +47,7 @@ TOOL_SLIM_TAIL_CHARS=1200
 TOOL_SLIM_IMPORTANT_LINES=40
 TOOL_SLIM_JSON_MAX_ITEMS=20
 TOOL_SLIM_DEBUG=false
+TOOL_SLIM_NOTICE_IN_RESULT=false
 
 # Optional OpenAI-compatible compressor. If unset or failing, deterministic compaction is used.
 TOOL_SLIM_LLM_ENABLED=false
@@ -102,6 +103,8 @@ python3 tool-slim/__init__.py
 ```
 
 The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
+
+Compaction emits an `INFO` log through Python logging. Enable `TOOL_SLIM_DEBUG=true` to also write concise compaction lines to `stderr` while testing.
 
 ## Versioning
 
