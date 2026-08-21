@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 IMPORTANT_MARKERS = (
@@ -211,7 +211,7 @@ class ToolSlimPlugin:
             headers=headers,
             method="POST",
         )
-        timeout = _env_int("TOOL_SLIM_LLM_TIMEOUT_SECONDS", 5)
+        timeout = _env_int("TOOL_SLIM_LLM_TIMEOUT_SECONDS", 30)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
         return data["choices"][0]["message"]["content"]

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Raise default LLM compaction timeout to 30 seconds for cold local model loads.
+- Document 60 seconds as a practical local Hermes setting for slow first responses.
+
 ## 0.2.0
 
 - Add optional OpenAI-compatible LLM compaction with deterministic fallback.
