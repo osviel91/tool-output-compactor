@@ -1,0 +1,5 @@
+name: tool-slim
+version: 0.1.0
+description: "Compact large Hermes tool results before they re-enter model context"
+hooks:
+  - transform_tool_result
