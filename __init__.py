@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.request
 from typing import Any
 
 
@@ -30,6 +31,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 class ToolSlimPlugin:
     @property
     def name(self) -> str:
@@ -53,7 +61,7 @@ class ToolSlimPlugin:
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
             return None
-        if os.environ.get("TOOL_SLIM_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+        if _env_bool("TOOL_SLIM_DEBUG"):
             print(
                 f"[tool-slim] compacting tool={tool_name or 'unknown'} raw_chars={len(text)} target_chars={max_chars}",
                 file=sys.stderr,
@@ -89,9 +97,11 @@ class ToolSlimPlugin:
     ) -> str:
         parsed = self._try_json(text)
         if parsed is not None:
-            body = self._compact_json(parsed)
+            deterministic_body = self._compact_json(parsed)
         else:
-            body = self._compact_text(text)
+            deterministic_body = self._compact_text(text)
+
+        body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars) or deterministic_body
 
         header_lines = [
             "[tool-slim compacted tool result]",
@@ -123,6 +133,84 @@ class ToolSlimPlugin:
     def _one_line(self, text: str, limit: int) -> str:
         text = text.replace("\n", " ")
         return text if len(text) <= limit else text[:limit] + "..."
+
+    def _compact_with_llm(
+        self,
+        tool_name: str,
+        raw_text: str,
+        deterministic_body: str,
+        max_chars: int,
+    ) -> str | None:
+        if not _env_bool("TOOL_SLIM_LLM_ENABLED"):
+            return None
+        base_url = os.environ.get("TOOL_SLIM_LLM_BASE_URL", "").rstrip("/")
+        model = os.environ.get("TOOL_SLIM_LLM_MODEL", "")
+        if not base_url or not model:
+            return None
+
+        important = self._important_lines(raw_text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
+        budget = _env_int("TOOL_SLIM_LLM_MAX_CHARS", max(800, max_chars // 2))
+        prompt = self._llm_prompt(tool_name, deterministic_body, budget)
+        try:
+            summary = self._call_llm(base_url, model, prompt)
+        except Exception as exc:
+            if _env_bool("TOOL_SLIM_DEBUG"):
+                print(f"[tool-slim] llm_compaction_failed error={type(exc).__name__}", file=sys.stderr)
+            return None
+
+        summary = summary.strip()
+        if not summary:
+            return None
+        if len(summary) > budget:
+            summary = summary[:budget] + "..."
+
+        parts = []
+        if important:
+            parts.append("Preserved critical lines:\n" + "\n".join(important))
+        parts.append("LLM summary:\n" + summary)
+        return "\n\n---\n\n".join(parts)
+
+    def _llm_prompt(self, tool_name: str, text: str, budget: int) -> str:
+        return (
+            "Compress this Hermes tool result for a small-context coding agent.\n"
+            "Rules:\n"
+            "- Preserve errors, warnings, tracebacks, exit codes, commands, file paths, ids and URLs.\n"
+            "- Preserve facts needed to continue the task.\n"
+            "- Remove repetition, progress noise, long listings and boilerplate.\n"
+            "- Do not invent. If uncertain, say what is visible in the tool result only.\n"
+            "- Return plain text only.\n"
+            f"- Keep under {budget} characters.\n\n"
+            f"Tool: {tool_name}\n"
+            "Tool result:\n"
+            f"{text}"
+        )
+
+    def _call_llm(self, base_url: str, model: str, prompt: str) -> str:
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You compress tool output for coding agents."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": _env_int("TOOL_SLIM_LLM_MAX_TOKENS", 700),
+            }
+        ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        api_key = os.environ.get("TOOL_SLIM_LLM_API_KEY", "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        timeout = _env_int("TOOL_SLIM_LLM_TIMEOUT_SECONDS", 5)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data["choices"][0]["message"]["content"]
 
     def _compact_json(self, value: Any, depth: int = 0) -> str:
         max_items = _env_int("TOOL_SLIM_JSON_MAX_ITEMS", 20)
@@ -181,6 +269,10 @@ def register(ctx: Any) -> None:
 
 
 def _demo() -> None:
+    saved_env = {name: os.environ.get(name) for name in os.environ if name.startswith("TOOL_SLIM_LLM_")}
+    for name in saved_env:
+        os.environ.pop(name, None)
+
     plugin = ToolSlimPlugin()
     small = "ok"
     assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
@@ -203,6 +295,24 @@ def _demo() -> None:
     compact_json = plugin.transform_tool_result(tool_name="api", result=data)
     assert compact_json is not None
     assert "JSON object" in compact_json
+
+    os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
+    os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
+    os.environ["TOOL_SLIM_LLM_MODEL"] = "mock"
+    plugin._call_llm = lambda *_: "kept useful summary"  # type: ignore[method-assign]
+    compact_llm = plugin.transform_tool_result(tool_name="terminal", result=large)
+    assert compact_llm is not None
+    assert "Preserved critical lines" in compact_llm
+    assert "ERROR: useful failure" in compact_llm
+    assert "LLM summary" in compact_llm
+    assert "kept useful summary" in compact_llm
+
+    for name in list(os.environ):
+        if name.startswith("TOOL_SLIM_LLM_"):
+            os.environ.pop(name, None)
+    for name, value in saved_env.items():
+        if value is not None:
+            os.environ[name] = value
 
 
 if __name__ == "__main__":

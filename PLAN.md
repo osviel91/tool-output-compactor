@@ -62,6 +62,13 @@ Keep these as small `if tool_name` branches. No class hierarchy unless it become
 
 Not for V1.
 
+Optional LLM compression exists before fast-brain integration and remains local/runtime-only:
+
+- Disabled by default.
+- Uses an OpenAI-compatible `/v1/chat/completions` endpoint when configured.
+- Falls back to deterministic compaction on missing config, timeout or API failure.
+- Preserves deterministic critical lines alongside the LLM summary.
+
 Possible later flow:
 
 ```txt

@@ -38,6 +38,15 @@ TOOL_SLIM_TAIL_CHARS=1200
 TOOL_SLIM_IMPORTANT_LINES=40
 TOOL_SLIM_JSON_MAX_ITEMS=20
 TOOL_SLIM_DEBUG=false
+
+# Optional OpenAI-compatible compressor. If unset or failing, deterministic compaction is used.
+TOOL_SLIM_LLM_ENABLED=false
+TOOL_SLIM_LLM_BASE_URL=https://example.com/v1
+TOOL_SLIM_LLM_MODEL=compressor
+TOOL_SLIM_LLM_API_KEY=
+TOOL_SLIM_LLM_TIMEOUT_SECONDS=5
+TOOL_SLIM_LLM_MAX_CHARS=2000
+TOOL_SLIM_LLM_MAX_TOKENS=700
 ```
 
 ## Install Sketch
