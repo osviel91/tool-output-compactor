@@ -102,6 +102,16 @@ python3 tool-slim/__init__.py
 
 The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
 
+## Versioning
+
+Version lives in three places and must be bumped together on plugin updates:
+
+- `VERSION`
+- `plugin.yaml`
+- `__init__.py` as `__version__`
+
+Record user-visible changes in `CHANGELOG.md` so future agents can see what changed between installed versions.
+
 ## Current State
 
 The code uses Hermes' native plugin hook registration:

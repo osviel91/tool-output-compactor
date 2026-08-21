@@ -4,7 +4,11 @@ import json
 import os
 import sys
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+
+__version__ = "0.2.0"
 
 
 IMPORTANT_MARKERS = (
@@ -269,6 +273,10 @@ def register(ctx: Any) -> None:
 
 
 def _demo() -> None:
+    root = Path(__file__).resolve().parent
+    assert (root / "VERSION").read_text(encoding="utf-8").strip() == __version__
+    assert f"version: {__version__}" in (root / "plugin.yaml").read_text(encoding="utf-8")
+
     saved_env = {name: os.environ.get(name) for name in os.environ if name.startswith("TOOL_SLIM_LLM_")}
     for name in saved_env:
         os.environ.pop(name, None)
