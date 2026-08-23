@@ -190,6 +190,10 @@ TOOL_SLIM_ENABLED=true
 # Recommended: 4000-8000 for small models, 12000-20000 for larger local models.
 TOOL_SLIM_MAX_CHARS=4000
 
+# Skip compaction when the potential saving (raw_chars - max_chars) is below this.
+# Prevents truncating useful output for a negligible gain (e.g. 4200 -> 4000).
+TOOL_SLIM_MIN_SAVING_CHARS=500
+
 # Character head/tail fallback for unstructured deterministic text compaction.
 # Recommended: 800-2000 each; raise only if command endings keep losing useful context.
 TOOL_SLIM_HEAD_CHARS=1200

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.9
+
+- Skip compaction when the potential saving is too small to justify the overhead (new `TOOL_SLIM_MIN_SAVING_CHARS`, default 500). Avoids truncating useful output for marginal savings.
+- Ignore `exit_code_meaning` like "No matches found (not an error)" when detecting error lines inside `session_search` history.
+
 ## 0.2.8
 
 - Ignore already-compacted tool results and `error: null` when detecting error lines inside `session_search` history.

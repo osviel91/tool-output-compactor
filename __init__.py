@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 
 logger = logging.getLogger("tool-slim")
@@ -88,6 +88,9 @@ class ToolSlimPlugin:
         text = self._to_text(result)
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
+            return None
+        min_saving = _env_int("TOOL_SLIM_MIN_SAVING_CHARS", 500)
+        if len(text) - max_chars < min_saving:
             return None
         if _env_bool("TOOL_SLIM_DEBUG"):
             print(
@@ -476,6 +479,9 @@ class ToolSlimPlugin:
             if isinstance(parsed, dict):
                 if parsed.get("error"):
                     return True
+                meaning = str(parsed.get("exit_code_meaning") or "").lower()
+                if any(token in meaning for token in ("not an error", "no matches", "not found")):
+                    return False
                 exit_code = parsed.get("exit_code", parsed.get("returncode"))
                 if exit_code not in (None, "", 0, "0"):
                     return True
@@ -637,6 +643,12 @@ def _demo() -> None:
     small = "ok"
     assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
 
+    barely_over = "x" * (_env_int("TOOL_SLIM_MAX_CHARS", 4000) + 100)
+    assert plugin.transform_tool_result(tool_name="terminal", result=barely_over) is None
+
+    comfortably_over = "y" * (_env_int("TOOL_SLIM_MAX_CHARS", 4000) + _env_int("TOOL_SLIM_MIN_SAVING_CHARS", 500) + 100)
+    assert plugin.transform_tool_result(tool_name="terminal", result=comfortably_over) is not None
+
     large = "line\n" * 2000 + "ERROR: useful failure\n" + "tail\n" * 2000
     compact = plugin.transform_tool_result(
         tool_name="terminal",
@@ -764,6 +776,9 @@ def _demo() -> None:
     assert not plugin._session_search_has_error(already_compacted)
     error_null = {"id": 98, "role": "tool", "tool_name": "terminal", "content": '{"output": "ok", "exit_code": 0, "error": null}'}
     assert not plugin._session_search_has_error(error_null)
+
+    no_matches = {"id": 97, "role": "tool", "tool_name": "terminal", "content": '{"output": "", "exit_code": 1, "error": null, "exit_code_meaning": "No matches found (not an error)"}'}
+    assert not plugin._session_search_has_error(no_matches)
 
     kpi_large = {"output": "row\n" * 3000, "exit_code": 0, "error": None}
     compact_kpi = plugin.transform_tool_result(tool_name="terminal", result=kpi_large)
