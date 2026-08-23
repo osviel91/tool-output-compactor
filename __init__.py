@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 
 logger = logging.getLogger("tool-slim")
@@ -142,6 +142,8 @@ class ToolSlimPlugin:
             llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
         mode = "hybrid" if llm_body else "deterministic"
         body = llm_body or deterministic_body
+        saved_chars_estimate = max(0, len(text) - len(body))
+        reduction_pct_estimate = round(saved_chars_estimate * 100 / max(1, len(text)), 1)
 
         header_lines = [
             "[tool-slim compacted tool result]",
@@ -150,7 +152,9 @@ class ToolSlimPlugin:
             f"decision_reason: {decision.reason}",
             f"raw_chars: {len(text)}",
             f"target_chars: {max_chars}",
-            f"omitted_chars_estimate: {max(0, len(text) - len(body))}",
+            f"omitted_chars_estimate: {saved_chars_estimate}",
+            f"saved_chars_estimate: {saved_chars_estimate}",
+            f"reduction_pct_estimate: {reduction_pct_estimate}",
         ]
         if status:
             header_lines.append(f"status: {status}")
@@ -525,6 +529,8 @@ def _demo() -> None:
     assert "[tool-slim compacted tool result]" in compact
     assert "status: success" in compact
     assert "duration_ms: 12" in compact
+    assert "saved_chars_estimate:" in compact
+    assert "reduction_pct_estimate:" in compact
     assert "ERROR: useful failure" in compact
     assert len(compact) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
 

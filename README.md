@@ -79,6 +79,8 @@ decision_reason: structured text
 raw_chars: 12000
 target_chars: 4000
 omitted_chars_estimate: 8200
+saved_chars_estimate: 8200
+reduction_pct_estimate: 68.3
 status: ok
 duration_ms: 1234
 ```
@@ -93,6 +95,7 @@ By default, compaction is deterministic and dependency-free:
 - Errors, warnings, tracebacks, stderr and exit codes are prioritized, including inside JSON string fields like terminal `output`.
 - Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
 - The compacted result always says compaction happened and reports omitted size.
+- The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
 
 Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-slim` falls back to deterministic compaction.
 
@@ -314,13 +317,57 @@ If a large result appears without `[tool-slim compacted tool result]`, likely ca
 - `TOOL_SLIM_ENABLED=false` is set in the environment.
 - `TOOL_SLIM_MAX_CHARS` is higher than the result size.
 
+## Benchmark And KPIs
+
+Use `benchmark.py` to make compaction quality measurable before and after changes. It has no dependencies and runs in two modes.
+
+Synthetic fixtures:
+
+```bash
+python3 benchmark.py
+```
+
+Real Hermes session diagnostics:
+
+```bash
+python3 benchmark.py --session-id SESSION_ID
+```
+
+Machine-readable output for dashboards or for giving Hermes its own KPIs:
+
+```bash
+python3 benchmark.py --json
+python3 benchmark.py --session-id SESSION_ID --json
+```
+
+Primary KPIs:
+
+- `reduction_pct`: how much active context was saved.
+- `saved_chars`: raw characters avoided in model context.
+- `critical_marker_failures`: required facts/errors lost by synthetic benchmark cases; target `0`.
+- `over_budget`: compacted outputs still above `TOOL_SLIM_MAX_CHARS`; target `0`.
+- `large_uncompacted`: real session tool results above budget that did not contain a `tool-slim` header; target `0`.
+- `compacted_messages`: count of real tool messages compacted in a session.
+
+Runtime KPIs visible to Hermes in each compacted tool result:
+
+- `raw_chars`: original result size.
+- `target_chars`: configured compaction budget.
+- `saved_chars_estimate`: estimated characters removed from the active context.
+- `reduction_pct_estimate`: estimated percentage reduction for that tool result.
+- `mode`: `deterministic` or `hybrid`.
+- `decision_reason`: why that mode was selected.
+
+The benchmark intentionally checks boring invariants, not semantic intelligence. A good run means `tool-slim` saved context while preserving known critical markers. It does not prove that every future task has enough detail; use real-session diagnostics for that.
+
 ## Development
 
-Run the built-in checks:
+Run the built-in checks and benchmark:
 
 ```bash
 python3 -m compileall tool-slim
 python3 tool-slim/__init__.py
+python3 tool-slim/benchmark.py
 ```
 
 The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
