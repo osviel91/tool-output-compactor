@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- Add a one-line KPI banner to every compacted tool result (`tool-slim: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`), always visible in the tool card.
+
+## 0.3.0
+
+- `session_search` now preserves `key_actions` (commands, scripts, file paths from tool calls) so agents can reconstruct the workflow without re-searching sessions.
+- Make the number of preserved `last_assistant_messages` configurable via `TOOL_SLIM_SESSION_TAIL` (default 8).
+
 ## 0.2.9
 
 - Skip compaction when the potential saving is too small to justify the overhead (new `TOOL_SLIM_MIN_SAVING_CHARS`, default 500). Avoids truncating useful output for marginal savings.

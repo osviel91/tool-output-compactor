@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.9"
+__version__ = "0.3.1"
 
 
 logger = logging.getLogger("tool-slim")
@@ -170,7 +170,7 @@ class ToolSlimPlugin:
         if _env_bool("TOOL_SLIM_NOTICE_IN_RESULT"):
             header_lines.append(f"notice: tool-slim compacted this result using {mode} mode")
 
-        compacted = self._assemble_compacted(text, body, max_chars, header_lines)
+        compacted = self._assemble_compacted(text, body, max_chars, header_lines, tool_name=tool_name, mode=mode, reason=decision.reason)
         self._log_compaction(tool_name, len(text), len(compacted), mode, status)
         return compacted
 
@@ -180,16 +180,25 @@ class ToolSlimPlugin:
         body: str,
         max_chars: int,
         header_lines: list[str],
+        *,
+        tool_name: str = "",
+        mode: str = "",
+        reason: str = "",
     ) -> str:
         """Assemble header + body, truncate to budget, then report final KPIs
         measured against the persisted output (including header and truncation)."""
         raw_len = len(raw_text)
 
         def build(saved: int) -> str:
-            lines = header_lines + [
+            reduction = round(saved * 100 / max(1, raw_len), 1)
+            banner = f"tool-slim: compacted {tool_name or 'unknown'} · {reduction}% reduction · saved {saved} chars · {mode or 'unknown'}"
+            if reason:
+                banner += f" ({reason})"
+            lines = [header_lines[0], banner, *header_lines[1:]]
+            lines += [
                 f"omitted_chars_estimate: {saved}",
                 f"saved_chars_estimate: {saved}",
-                f"reduction_pct_estimate: {round(saved * 100 / max(1, raw_len), 1)}",
+                f"reduction_pct_estimate: {reduction}",
             ]
             compacted = "\n".join(lines) + "\n\n" + body
             if len(compacted) <= max_chars:
@@ -427,6 +436,7 @@ class ToolSlimPlugin:
             lines.append("messages: none")
             return "\n".join(lines)
 
+        tail = _env_int("TOOL_SLIM_SESSION_TAIL", 8)
         user_msgs = []
         assistant_msgs = []
         error_msgs = []
@@ -447,18 +457,63 @@ class ToolSlimPlugin:
         if user_msgs:
             lines.append("first_user_message:")
             lines.append(self._one_line(user_msgs[0], 1000))
+        actions = self._session_search_key_actions(messages)
+        if actions:
+            lines.append("key_actions:")
+            for action in actions:
+                lines.append("- " + action)
         if error_msgs:
             lines.append("error_messages:")
             for msg in error_msgs[:10]:
                 lines.append("- " + msg)
         if assistant_msgs:
             lines.append("last_assistant_messages:")
-            for msg in assistant_msgs[-5:]:
+            for msg in assistant_msgs[-tail:]:
                 lines.append("- " + self._one_line(msg, 800))
 
-        shown = min(1, len(user_msgs)) + min(10, len(error_msgs)) + min(5, len(assistant_msgs))
+        shown = min(1, len(user_msgs)) + min(6, len(actions)) + min(10, len(error_msgs)) + min(tail, len(assistant_msgs))
         lines.append(f"messages_shown: {shown} of {len(messages)}")
         return "\n".join(lines)
+
+    def _session_search_key_actions(self, messages: list[Any], limit: int = 6) -> list[str]:
+        actions: list[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(call.get("function"), dict) else call
+                name = fn.get("name", "")
+                try:
+                    args = fn.get("arguments") or "{}"
+                    parsed_args = json.loads(args) if isinstance(args, str) else args
+                    if not isinstance(parsed_args, dict):
+                        parsed_args = {}
+                except (TypeError, ValueError):
+                    parsed_args = {}
+                action = self._session_search_action_line(name, parsed_args)
+                if action and action not in actions:
+                    actions.append(action)
+                    if len(actions) >= limit:
+                        return actions
+        return actions
+
+    def _session_search_action_line(self, name: str, args: dict[str, Any]) -> str:
+        if not name:
+            return ""
+        if name in {"write_file", "patch"} and args.get("path"):
+            return f"{name}: {self._one_line(str(args['path']), 300)}"
+        if name in {"terminal", "execute_code", "command"} and args.get("command"):
+            return f"{name}: {self._one_line(str(args['command']), 400)}"
+        if name in {"read_file", "glob", "grep", "search_files"} and args.get("path"):
+            return f"{name}: {self._one_line(str(args['path']), 300)}"
+        if args.get("command"):
+            return f"{name}: {self._one_line(str(args['command']), 400)}"
+        return f"{name}"
 
     def _session_search_has_error(self, msg: dict[str, Any]) -> bool:
         content = msg.get("content", "")
@@ -658,6 +713,8 @@ def _demo() -> None:
     )
     assert compact is not None
     assert "[tool-slim compacted tool result]" in compact
+    assert "tool-slim: compacted terminal" in compact
+    assert "reduction" in compact
     assert "status: success" in compact
     assert "duration_ms: 12" in compact
     assert "saved_chars_estimate:" in compact
@@ -728,9 +785,10 @@ def _demo() -> None:
 
     session_search_messages = [
         {"id": 1, "role": "user", "content": "Check metadata for tracks in album"},
-        {"id": 2, "role": "assistant", "content": "Decision: apply ID3 tags to all 113 tracks"},
+        {"id": 2, "role": "assistant", "content": "Decision: apply ID3 tags to all 113 tracks", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{\"command\": \"python3 audit_tags.py\"}"}}]},
+        {"id": 3, "role": "tool", "tool_name": "terminal", "content": '{"output": "ok", "exit_code": 0, "error": null}'},
     ]
-    for i in range(3, 220):
+    for i in range(4, 220):
         session_search_messages.append({"id": i, "role": "tool", "tool_name": "terminal", "content": f'{{"output": "progress row {i} /Volumes/music/track_{i}.mp3", "exit_code": 0, "error": null}}'})
     session_search_data = {
         "success": True,
@@ -749,6 +807,8 @@ def _demo() -> None:
     assert "mode: deterministic" in compact_search
     assert "decision_reason: structured tool session_search" in compact_search
     assert "first_user_message" in compact_search
+    assert "key_actions:" in compact_search
+    assert "python3 audit_tags.py" in compact_search
     assert "last_assistant_messages" in compact_search
     assert "Decision: apply ID3 tags to all 113 tracks" in compact_search
     assert "20260823_143121_22e2e7" in compact_search

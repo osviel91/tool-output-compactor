@@ -73,6 +73,7 @@ Every compacted result starts with a header like:
 
 ```txt
 [tool-slim compacted tool result]
+tool-slim: compacted terminal · 68.3% reduction · saved 8200 chars · deterministic (structured text)
 tool: terminal
 mode: deterministic
 decision_reason: structured text
@@ -84,6 +85,8 @@ reduction_pct_estimate: 68.3
 status: ok
 duration_ms: 1234
 ```
+
+The second line is a one-line banner visible to the human in the tool card, reported every time the plugin compacts a result.
 
 ## Behavior
 
@@ -207,6 +210,10 @@ TOOL_SLIM_TAIL_LINES=10
 # Max preserved lines matching error/warning/traceback/exit markers.
 # Recommended: 20-80. Raise for noisy test/build logs with many distinct failures.
 TOOL_SLIM_IMPORTANT_LINES=40
+
+# How many last assistant messages to preserve in a session_search result.
+# Raise for "repeat the same process" tasks where the workflow steps matter.
+TOOL_SLIM_SESSION_TAIL=8
 
 # Max object/array entries shown per JSON level before omitting the rest.
 # Recommended: 10-30. Raise for compact API payloads; keep low for huge arrays.
