@@ -211,6 +211,16 @@ TOOL_SLIM_TAIL_LINES=10
 # Recommended: 20-80. Raise for noisy test/build logs with many distinct failures.
 TOOL_SLIM_IMPORTANT_LINES=40
 
+# Proactively replace exact duplicate tool results (same session, tool, content)
+# with a small back-reference stub to avoid context bloat from repeated identical output.
+TOOL_SLIM_DEDUP=true
+
+# Minimum result size before duplicate detection applies. Aligns with Hermes' prune threshold.
+TOOL_SLIM_DEDUP_MIN_CHARS=200
+
+# How many unique results to remember per session for duplicate detection.
+TOOL_SLIM_DEDUP_WINDOW=50
+
 # How many last assistant messages to preserve in a session_search result.
 # Raise for "repeat the same process" tasks where the workflow steps matter.
 TOOL_SLIM_SESSION_TAIL=8

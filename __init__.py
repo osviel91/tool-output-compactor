@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 
 logger = logging.getLogger("tool-slim")
@@ -67,6 +68,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 class ToolSlimPlugin:
+    def __init__(self) -> None:
+        self._seen: dict[str, dict[str, int]] = {}
+
     @property
     def name(self) -> str:
         return "tool-slim"
@@ -80,12 +84,17 @@ class ToolSlimPlugin:
         status: str = "",
         error_type: str = "",
         error_message: str = "",
+        session_id: str = "",
         **_: Any,
     ) -> str | None:
         if os.environ.get("TOOL_SLIM_ENABLED", "true").lower() in {"0", "false", "no", "off"}:
             return None
 
         text = self._to_text(result)
+        duplicate = self._dedup(tool_name or "unknown", session_id, text)
+        if duplicate is not None:
+            return duplicate
+
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
             return None
@@ -107,6 +116,38 @@ class ToolSlimPlugin:
             error_type=error_type,
             error_message=error_message,
         )
+
+    def _dedup(self, tool_name: str, session_id: str, text: str) -> str | None:
+        """Replace an exact repeat of a tool result (same session, same tool,
+        same content) with a small back-reference stub. Proactive guard against
+        context bloat from repeated identical tool output."""
+        if not _env_bool("TOOL_SLIM_DEDUP", True):
+            return None
+        if len(text) < _env_int("TOOL_SLIM_DEDUP_MIN_CHARS", 200):
+            return None
+        if not session_id:
+            return None
+        h = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+        bucket = self._seen.setdefault(session_id, {})
+        key = f"{tool_name}:{h}"
+        count = bucket.get(key, 0)
+        if count:
+            bucket[key] = count + 1
+            self._log_compaction(tool_name, len(text), 0, "dedup", status="")
+            return (
+                "[tool-slim compacted tool result]\n"
+                f"tool: {tool_name}\n"
+                "mode: dedup\n"
+                "decision_reason: duplicate tool result\n"
+                f"raw_chars: {len(text)}\n"
+                f"saved_chars_estimate: {len(text)}\n"
+                "reduction_pct_estimate: 100.0\n"
+                f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
+            )
+        bucket[key] = 1
+        if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
+            bucket.pop(next(iter(bucket)))
+        return None
 
     def _to_text(self, result: Any) -> str:
         if isinstance(result, str):
@@ -703,6 +744,27 @@ def _demo() -> None:
 
     comfortably_over = "y" * (_env_int("TOOL_SLIM_MAX_CHARS", 4000) + _env_int("TOOL_SLIM_MIN_SAVING_CHARS", 500) + 100)
     assert plugin.transform_tool_result(tool_name="terminal", result=comfortably_over) is not None
+
+    dup_body = "line\n" * 2000
+    first = plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessA")
+    assert first is not None
+    second = plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessA")
+    assert second is not None
+    assert "mode: dedup" in second
+    assert "duplicate tool result" in second
+    assert "reduction_pct_estimate: 100.0" in second
+    third = plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessA")
+    assert third is not None and "mode: dedup" in third
+    other_session = plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessB")
+    assert other_session is not None and "mode: dedup" not in other_session
+    other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
+    assert other_tool is not None and "mode: dedup" not in other_tool
+
+    small_dup = "ok" * 30
+    first_small = plugin.transform_tool_result(tool_name="terminal", result=small_dup, session_id="sessA")
+    second_small = plugin.transform_tool_result(tool_name="terminal", result=small_dup, session_id="sessA")
+    assert first_small is None
+    assert second_small is None
 
     large = "line\n" * 2000 + "ERROR: useful failure\n" + "tail\n" * 2000
     compact = plugin.transform_tool_result(

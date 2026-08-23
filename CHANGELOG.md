@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Add proactive exact-duplicate detection: identical tool results (same session, tool and content) are replaced with a small back-reference stub instead of re-entering context (`TOOL_SLIM_DEDUP`, `TOOL_SLIM_DEDUP_MIN_CHARS`, `TOOL_SLIM_DEDUP_WINDOW`).
+
 ## 0.3.1
 
 - Add a one-line KPI banner to every compacted tool result (`tool-slim: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`), always visible in the tool card.
