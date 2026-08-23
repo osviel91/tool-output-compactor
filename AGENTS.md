@@ -56,8 +56,10 @@ Adapt it once the real contract is known.
 - No dependencies.
 - Do not hide failures: preserve errors, warnings, tracebacks, exit codes and failed status.
 - Compact only when output exceeds `TOOL_SLIM_MAX_CHARS`.
+- Skip compaction when the potential saving is too small to justify overhead (`TOOL_SLIM_MIN_SAVING_CHARS`).
+- Replace exact duplicate tool results with a stub before they re-enter context (`TOOL_SLIM_DEDUP`).
 - Always say compaction happened and how much was omitted.
-- Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate` and `reduction_pct_estimate`.
+- Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate`, `reduction_pct_estimate` and a one-line banner (`tool-slim: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`).
 - Prefer one boring file over abstractions.
 
 ## Local Hermes Test Context
@@ -112,6 +114,21 @@ Findings from that session:
 - Future improvements should focus on the decision pipeline: when to use deterministic, hybrid or LLM compaction.
 - Structured `read_file` results, file listings, command outputs with rows, and failures should stay deterministic.
 - LLM should only summarize long unstructured text/log noise, with deterministic sections preserved first.
+
+## Context Heuristic
+
+A long download session overflowed the model window (`Prompt too long: 65986 > 65536 tokens`) because Hermes did not know the real limit: its probe of the custom endpoint failed and it assumed 256k, so compression (at `compression.threshold` of the assumed window) fired too late or never.
+
+When diagnosing "session ended without finishing" or "context overflow":
+
+1. Check `agent.log` for `defaulting to 256,000 tokens (probe-down)` — that means the real window is unknown.
+2. Query the endpoint's real limits: `GET <base_url>/models` → `max_model_len` per model.
+3. Pin them in `~/.hermes/config.yaml`:
+   - `model.context_length` for the active model.
+   - `custom_providers[].models.<id>.context_length` for each model of a custom provider (single source of truth for startup, `/model`, `/info`).
+4. Remember: Hermes deduplicates identical tool results only during compression (reactively, `agent/context_compressor.py`, min 200 chars). `tool-slim` deduplicates at hook time (proactively, before the result re-enters context) via `TOOL_SLIM_DEDUP`.
+
+Local omlx model windows (verified against `/v1/models`): `main`=65536, `advanced-vision`=65536, `assistive`/`reasoning`/`fast`/`operator`=131072, `compressor`/`embedding`/`whisper`=32768.
 
 ## Test Command
 

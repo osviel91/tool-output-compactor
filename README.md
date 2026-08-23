@@ -395,11 +395,26 @@ The self-check includes deterministic compaction and a mocked LLM path. It does 
 
 Compaction emits an `INFO` log through Python logging. Enable `TOOL_SLIM_DEBUG=true` to also write concise compaction lines to `stderr` while testing.
 
+## Context Heuristic
+
+`tool-slim` only shrinks what is already there; it cannot fix a model whose real context window is unknown to Hermes. A long agentic session overflowed with `Prompt too long: 65986 tokens exceeds max context window of 65536 tokens` because Hermes had fallen back to a 256k assumption when its probe of the endpoint failed.
+
+Heuristic to apply on local setups:
+
+1. **Pin the real context window per model.** Discover it from the endpoint (`GET /v1/models`, key `max_model_len`/`context_length`) and set it explicitly so Hermes never guesses:
+   - Root model: `model.context_length`.
+   - Per-model override inside a custom provider: `custom_providers[].models.<id>.context_length` (this is the single source of truth used by startup, `/model` switch, `/info` and `get_model_context_length`).
+2. **Expect probe failure on non-standard endpoints.** If `agent.log` shows `Could not detect context length ... defaulting to 256,000 tokens (probe-down)`, the window is wrong; compression triggers at `compression.threshold` of the *assumed* window, so an overestimated window means Hermes compresses too late or never.
+3. **Compression is reactive, dedup is proactive.** Hermes only deduplicates identical tool results during context compression (`agent/context_compressor.py`, min 200 chars) — after the prompt has already grown. `tool-slim` deduplicates at hook time (before the result re-enters context), which is earlier and complementary.
+4. **A long task that re-queries the same tool output repeatedly is the biggest risk.** Repeated `process`/`terminal` results of the same content multiply unchanged; exact-duplicate detection collapses them to a stub.
+
 ## Current Hermes Gap
 
 Local session testing found that `skill_view` was compacted correctly, while a `session_search` result of about 30k characters entered context uncompressed. The plugin was active; the issue was that `session_search` ran through Hermes' inline executor path, not the normal registry path where `model_tools.py` applies `transform_tool_result`.
 
 Minimal fix belongs in Hermes, not in `tool-slim`: route inline tool results through the same transform hook before appending them to the conversation. `tool-slim` should stay boring and only implement the hook contract.
+
+Separately, a long download session overflowed the model window because the endpoint's real limit was not configured in Hermes (see Context Heuristic above). That was a configuration issue, not a `tool-slim` one.
 
 ## Versioning
 
