@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- Add `benchmark.py` for dependency-free synthetic compaction checks and real Hermes session diagnostics.
+- Document KPIs for reduction, saved characters, critical marker preservation, budget violations and large uncompressed tool results.
+- Include `saved_chars_estimate` and `reduction_pct_estimate` in compacted tool results so Hermes can see per-result impact in context.
+
 ## 0.2.5
 
 - Add an explicit compaction decision pipeline so structured results, failures and smaller outputs stay deterministic.

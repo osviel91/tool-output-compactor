@@ -21,6 +21,7 @@ Do not add fast-brain API calls in V1.
 
 - `plugin.yaml`: declares the intended Hermes hook.
 - `__init__.py`: dependency-free base plugin with deterministic, hybrid and optional LLM-assisted compaction.
+- `benchmark.py`: dependency-free synthetic benchmark plus real Hermes session diagnostics.
 - `README.md`: user-facing overview and install sketch.
 - `PLAN.md`: implementation roadmap.
 - `AGENTS.md`: this handoff.
@@ -56,6 +57,7 @@ Adapt it once the real contract is known.
 - Do not hide failures: preserve errors, warnings, tracebacks, exit codes and failed status.
 - Compact only when output exceeds `TOOL_SLIM_MAX_CHARS`.
 - Always say compaction happened and how much was omitted.
+- Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate` and `reduction_pct_estimate`.
 - Prefer one boring file over abstractions.
 
 ## Local Hermes Test Context
@@ -87,6 +89,14 @@ To inspect whether a session used `tool-slim`, search `~/.hermes/logs/agent.log`
 tool-slim: compacted tool=... raw_chars=... output_chars=... mode=... status=...
 ```
 
+Compacted tool messages should also contain header KPIs visible to Hermes in-context:
+
+```text
+saved_chars_estimate: ...
+reduction_pct_estimate: ...
+decision_reason: ...
+```
+
 To inspect persisted compacted results for a session, query `~/.hermes/state.db` read-only with SQLite:
 
 ```bash
@@ -108,9 +118,11 @@ Findings from that session:
 ```bash
 python3 -m compileall tool-slim
 python3 tool-slim/__init__.py
+python3 tool-slim/benchmark.py
 ```
 
 The second command runs minimal self-checks.
+The benchmark should pass `4/4` synthetic cases with `critical_marker_failures=0` and `over_budget=0` before tuning defaults.
 
 ## Next Agent First Task
 
