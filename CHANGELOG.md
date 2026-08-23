@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+- Add an explicit compaction decision pipeline so structured results, failures and smaller outputs stay deterministic.
+- Preserve structured `content` and `output` fields by line head/tail instead of sending useful listings to the LLM.
+- Add `TOOL_SLIM_LLM_MIN_CHARS`, `TOOL_SLIM_HEAD_LINES` and `TOOL_SLIM_TAIL_LINES`.
+
 ## 0.2.4
 
 - Preserve action facts separately from compacted noise: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
