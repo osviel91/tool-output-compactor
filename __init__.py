@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 logger = logging.getLogger("tool-slim")
@@ -461,9 +461,13 @@ class ToolSlimPlugin:
         content = msg.get("content", "")
         if not isinstance(content, str):
             return False
+        if content.lstrip().startswith("[tool-slim compacted tool result]"):
+            return False
         low = content.lower()
         if "traceback" in low or "exception" in low:
             return True
+        if "error: null" in low or "error:null" in low:
+            low = low.replace("error: null", "").replace("error:null", "")
         for marker in ("error:", "failed", "failure", "denied", "unauthorized", "forbidden", "timeout"):
             if marker in low:
                 return True
@@ -755,6 +759,11 @@ def _demo() -> None:
     assert "error_messages" in compact_search_fail
     assert "Traceback" in compact_search_fail
     assert "RuntimeError: boom" in compact_search_fail
+
+    already_compacted = {"id": 99, "role": "tool", "tool_name": "session_search", "content": "[tool-slim compacted tool result]\ntool: session_search\nmode: deterministic\n... error: null ..."}
+    assert not plugin._session_search_has_error(already_compacted)
+    error_null = {"id": 98, "role": "tool", "tool_name": "terminal", "content": '{"output": "ok", "exit_code": 0, "error": null}'}
+    assert not plugin._session_search_has_error(error_null)
 
     kpi_large = {"output": "row\n" * 3000, "exit_code": 0, "error": None}
     compact_kpi = plugin.transform_tool_result(tool_name="terminal", result=kpi_large)

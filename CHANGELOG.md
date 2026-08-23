@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- Ignore already-compacted tool results and `error: null` when detecting error lines inside `session_search` history.
+
 ## 0.2.7
 
 - Report final KPIs (`saved_chars_estimate`, `reduction_pct_estimate`, `omitted_chars_estimate`) measured against the persisted output after header and budget truncation.
