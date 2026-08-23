@@ -70,8 +70,9 @@ def _case_session_search() -> dict[str, Any]:
     messages.append({"id": 1, "role": "user", "content": "Fix metadata in /Volumes/music/Album and preserve original files"})
     messages.append({"id": 2, "role": "assistant", "content": "Decision: convert six .mp4.part files, leave long audiobook alone"})
     for i in range(3, 90):
-        messages.append({"id": i, "role": "tool", "tool_name": "terminal", "content": f"progress row {i} /Volumes/music/Album/track_{i}.mp3 ok"})
+        messages.append({"id": i, "role": "tool", "tool_name": "terminal", "content": f'{{"output": "progress row {i}", "exit_code": 0, "error": null}}'})
     messages.append({"id": 90, "role": "tool", "tool_name": "terminal", "content": "ERROR: ffmpeg failed for /Volumes/music/Album/07.mp4.part"})
+    messages.append({"id": 91, "role": "assistant", "content": "Final: 113 of 113 tagged, 7 .part files left untouched"})
     result = {
         "success": True,
         "mode": "read",
@@ -86,7 +87,16 @@ def _case_session_search() -> dict[str, Any]:
         "tool": "session_search",
         "args": {"session_id": "20260823_160703_cd024c"},
         "result": result,
-        "required": ["20260823_160703_cd024c", "session_meta", "ERROR: ffmpeg failed", "/Volumes/music/Album/07.mp4.part"],
+        "required": [
+            "20260823_160703_cd024c",
+            "session_meta",
+            "ERROR: ffmpeg failed",
+            "/Volumes/music/Album/07.mp4.part",
+            "Final: 113 of 113 tagged, 7 .part files left untouched",
+            "first_user_message",
+            "last_assistant_messages",
+            "messages_shown",
+        ],
         "should_compact": True,
     }
 

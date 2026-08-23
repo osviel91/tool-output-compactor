@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 logger = logging.getLogger("tool-slim")
@@ -126,8 +127,12 @@ class ToolSlimPlugin:
     ) -> str:
         parsed = self._try_json(text)
         if parsed is not None:
-            deterministic_body = self._compact_json(parsed)
-            important = self._important_from_value(parsed, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
+            if tool_name == "session_search":
+                deterministic_body = self._compact_session_search(parsed)
+                important: list[str] = []
+            else:
+                deterministic_body = self._compact_json(parsed)
+                important = self._important_from_value(parsed, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
         else:
             deterministic_body = self._compact_text(text)
             important = self._important_lines(text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
@@ -142,8 +147,6 @@ class ToolSlimPlugin:
             llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
         mode = "hybrid" if llm_body else "deterministic"
         body = llm_body or deterministic_body
-        saved_chars_estimate = max(0, len(text) - len(body))
-        reduction_pct_estimate = round(saved_chars_estimate * 100 / max(1, len(text)), 1)
 
         header_lines = [
             "[tool-slim compacted tool result]",
@@ -152,9 +155,6 @@ class ToolSlimPlugin:
             f"decision_reason: {decision.reason}",
             f"raw_chars: {len(text)}",
             f"target_chars: {max_chars}",
-            f"omitted_chars_estimate: {saved_chars_estimate}",
-            f"saved_chars_estimate: {saved_chars_estimate}",
-            f"reduction_pct_estimate: {reduction_pct_estimate}",
         ]
         if status:
             header_lines.append(f"status: {status}")
@@ -166,14 +166,36 @@ class ToolSlimPlugin:
             header_lines.append(f"error_message: {self._one_line(error_message, 500)}")
         if _env_bool("TOOL_SLIM_NOTICE_IN_RESULT"):
             header_lines.append(f"notice: tool-slim compacted this result using {mode} mode")
-        header = "\n".join(header_lines) + "\n\n"
-        compacted = header + body
-        if len(compacted) <= max_chars:
-            self._log_compaction(tool_name, len(text), len(compacted), mode, status)
-            return compacted
-        compacted = compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
+
+        compacted = self._assemble_compacted(text, body, max_chars, header_lines)
         self._log_compaction(tool_name, len(text), len(compacted), mode, status)
         return compacted
+
+    def _assemble_compacted(
+        self,
+        raw_text: str,
+        body: str,
+        max_chars: int,
+        header_lines: list[str],
+    ) -> str:
+        """Assemble header + body, truncate to budget, then report final KPIs
+        measured against the persisted output (including header and truncation)."""
+        raw_len = len(raw_text)
+
+        def build(saved: int) -> str:
+            lines = header_lines + [
+                f"omitted_chars_estimate: {saved}",
+                f"saved_chars_estimate: {saved}",
+                f"reduction_pct_estimate: {round(saved * 100 / max(1, raw_len), 1)}",
+            ]
+            compacted = "\n".join(lines) + "\n\n" + body
+            if len(compacted) <= max_chars:
+                return compacted
+            return compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
+
+        first = build(max(0, raw_len - len(body)))
+        final_saved = max(0, raw_len - len(first))
+        return build(final_saved)
 
     def _choose_compaction_mode(
         self,
@@ -186,6 +208,7 @@ class ToolSlimPlugin:
         error_message: str,
     ) -> CompactionDecision:
         checks = (
+            self._decision_session_search,
             self._decision_failures,
             self._decision_structured_tool_result,
             self._decision_structured_text,
@@ -197,6 +220,11 @@ class ToolSlimPlugin:
             if decision is not None:
                 return decision
         return CompactionDecision("deterministic", "fallback deterministic")
+
+    def _decision_session_search(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if tool_name == "session_search" and isinstance(parsed, dict):
+            return CompactionDecision("deterministic", "structured tool session_search")
+        return None
 
     def _decision_failures(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
         if error_type or error_message:
@@ -219,7 +247,7 @@ class ToolSlimPlugin:
             return CompactionDecision("deterministic", "structured content field")
         if isinstance(parsed, dict) and isinstance(parsed.get("output"), str) and self._looks_structured(parsed["output"]):
             return CompactionDecision("deterministic", "structured output field")
-        if tool_name in {"read_file", "glob", "grep"}:
+        if tool_name in {"read_file", "glob", "grep", "session_search"}:
             return CompactionDecision("deterministic", f"structured tool {tool_name}")
         return None
 
@@ -376,6 +404,81 @@ class ToolSlimPlugin:
         lines.append(self._compact_lines(text))
         return "\n".join(lines)
 
+    def _compact_session_search(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return self._compact_json(value)
+
+        lines = [
+            f"session_id: {value.get('session_id', '')}",
+            f"message_count: {value.get('message_count', '')}",
+            f"truncated: {value.get('truncated', '')}",
+        ]
+        meta = value.get("session_meta")
+        if isinstance(meta, dict):
+            for key in ("when", "source", "model", "title"):
+                if meta.get(key):
+                    lines.append(f"session_meta.{key}: {self._one_line(self._to_text(meta[key]), 500)}")
+
+        messages = value.get("messages")
+        if not isinstance(messages, list):
+            lines.append("messages: none")
+            return "\n".join(lines)
+
+        user_msgs = []
+        assistant_msgs = []
+        error_msgs = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if role == "user":
+                user_msgs.append(content.strip())
+            elif role == "assistant":
+                assistant_msgs.append(content.strip())
+            if self._session_search_has_error(msg):
+                error_msgs.append(f"[{role}/{msg.get('tool_name', '')}] {self._one_line(content, 700)}")
+
+        if user_msgs:
+            lines.append("first_user_message:")
+            lines.append(self._one_line(user_msgs[0], 1000))
+        if error_msgs:
+            lines.append("error_messages:")
+            for msg in error_msgs[:10]:
+                lines.append("- " + msg)
+        if assistant_msgs:
+            lines.append("last_assistant_messages:")
+            for msg in assistant_msgs[-5:]:
+                lines.append("- " + self._one_line(msg, 800))
+
+        shown = min(1, len(user_msgs)) + min(10, len(error_msgs)) + min(5, len(assistant_msgs))
+        lines.append(f"messages_shown: {shown} of {len(messages)}")
+        return "\n".join(lines)
+
+    def _session_search_has_error(self, msg: dict[str, Any]) -> bool:
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            return False
+        low = content.lower()
+        if "traceback" in low or "exception" in low:
+            return True
+        for marker in ("error:", "failed", "failure", "denied", "unauthorized", "forbidden", "timeout"):
+            if marker in low:
+                return True
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                if parsed.get("error"):
+                    return True
+                exit_code = parsed.get("exit_code", parsed.get("returncode"))
+                if exit_code not in (None, "", 0, "0"):
+                    return True
+        except (TypeError, ValueError):
+            pass
+        return False
+
     def _compact_lines(self, text: str) -> str:
         all_lines = text.splitlines()
         if not all_lines:
@@ -423,11 +526,23 @@ class ToolSlimPlugin:
         lines = []
         for line in text.splitlines():
             lower = line.lower()
-            if any(marker in lower for marker in IMPORTANT_MARKERS):
+            if self._line_is_critical(lower):
                 lines.append(line[:1000])
                 if len(lines) >= limit:
                     break
         return lines
+
+    def _line_is_critical(self, lower: str) -> bool:
+        if not any(marker in lower for marker in IMPORTANT_MARKERS):
+            return False
+        if "exit_code" in lower or "returncode" in lower:
+            try:
+                exit_code = int(re.search(r"(?:exit_code|returncode)[\"']?\s*[:=]\s*[\"']?(-?\d+)", lower).group(1))
+                if exit_code == 0:
+                    return False
+            except (AttributeError, ValueError):
+                pass
+        return True
 
     def _important_from_value(self, value: Any, limit: int) -> list[str]:
         lines: list[str] = []
@@ -594,6 +709,63 @@ def _demo() -> None:
     assert "decision_reason: large unstructured result" in compact_llm
     assert "LLM summary" in compact_llm
     assert "kept useful summary" in compact_llm
+
+    session_search_messages = [
+        {"id": 1, "role": "user", "content": "Check metadata for tracks in album"},
+        {"id": 2, "role": "assistant", "content": "Decision: apply ID3 tags to all 113 tracks"},
+    ]
+    for i in range(3, 220):
+        session_search_messages.append({"id": i, "role": "tool", "tool_name": "terminal", "content": f'{{"output": "progress row {i} /Volumes/music/track_{i}.mp3", "exit_code": 0, "error": null}}'})
+    session_search_data = {
+        "success": True,
+        "mode": "read",
+        "session_id": "20260823_143121_22e2e7",
+        "session_meta": {"when": "August 23, 2026", "source": "desktop", "model": "reasoning", "title": "Tag music album"},
+        "message_count": len(session_search_messages),
+        "truncated": True,
+        "messages": session_search_messages,
+    }
+    os.environ.pop("TOOL_SLIM_LLM_ENABLED", None)
+    os.environ.pop("TOOL_SLIM_LLM_BASE_URL", None)
+    os.environ.pop("TOOL_SLIM_LLM_MODEL", None)
+    compact_search = plugin.transform_tool_result(tool_name="session_search", result=session_search_data)
+    assert compact_search is not None
+    assert "mode: deterministic" in compact_search
+    assert "decision_reason: structured tool session_search" in compact_search
+    assert "first_user_message" in compact_search
+    assert "last_assistant_messages" in compact_search
+    assert "Decision: apply ID3 tags to all 113 tracks" in compact_search
+    assert "20260823_143121_22e2e7" in compact_search
+    assert "messages_shown" in compact_search
+
+    session_search_failure_messages = [
+        {"id": 1, "role": "assistant", "content": '{"output": "ok", "exit_code": 0, "error": null}'},
+        {"id": 2, "role": "tool", "tool_name": "terminal", "content": "Traceback (most recent call last):\\nRuntimeError: boom"},
+    ]
+    for i in range(3, 220):
+        session_search_failure_messages.append({"id": i, "role": "tool", "tool_name": "terminal", "content": f"noise line {i}"})
+    session_search_failure = {
+        "success": True,
+        "session_meta": {"title": "Old"},
+        "message_count": len(session_search_failure_messages),
+        "messages": session_search_failure_messages,
+    }
+    compact_search_fail = plugin.transform_tool_result(tool_name="session_search", result=session_search_failure)
+    assert compact_search_fail is not None
+    assert "error_messages" in compact_search_fail
+    assert "Traceback" in compact_search_fail
+    assert "RuntimeError: boom" in compact_search_fail
+
+    kpi_large = {"output": "row\n" * 3000, "exit_code": 0, "error": None}
+    compact_kpi = plugin.transform_tool_result(tool_name="terminal", result=kpi_large)
+    assert compact_kpi is not None
+    assert len(compact_kpi) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
+    import re as _re
+    saved_match = _re.search(r"saved_chars_estimate: (\d+)", compact_kpi)
+    reduction_match = _re.search(r"reduction_pct_estimate: ([\d.]+)", compact_kpi)
+    assert saved_match and int(saved_match.group(1)) > 0
+    assert reduction_match and float(reduction_match.group(1)) > 0
+    assert "omitted_chars_estimate: " in compact_kpi
 
     for name in list(os.environ):
         if name.startswith("TOOL_SLIM_LLM_"):

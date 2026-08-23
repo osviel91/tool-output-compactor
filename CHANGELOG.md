@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7
+
+- Report final KPIs (`saved_chars_estimate`, `reduction_pct_estimate`, `omitted_chars_estimate`) measured against the persisted output after header and budget truncation.
+- Add a dedicated deterministic policy for `session_search`: preserve session metadata, first user message, last assistant messages and real error lines, and show how many messages were kept.
+- Keep `session_search` deterministic in the decision pipeline (never sent to the LLM).
+- Stop treating `exit_code: 0` / `returncode: 0` as critical lines.
+
 ## 0.2.6
 
 - Add `benchmark.py` for dependency-free synthetic compaction checks and real Hermes session diagnostics.
