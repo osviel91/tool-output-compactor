@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Add an `action_hint` to duplicate-result stubs for background processes so the agent does not relaunch an already-running process.
+
 ## 0.3.2
 
 - Add proactive exact-duplicate detection: identical tool results (same session, tool and content) are replaced with a small back-reference stub instead of re-entering context (`TOOL_SLIM_DEDUP`, `TOOL_SLIM_DEDUP_MIN_CHARS`, `TOOL_SLIM_DEDUP_WINDOW`).

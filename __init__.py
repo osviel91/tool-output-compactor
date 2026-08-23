@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 
 logger = logging.getLogger("tool-slim")
@@ -134,7 +134,7 @@ class ToolSlimPlugin:
         if count:
             bucket[key] = count + 1
             self._log_compaction(tool_name, len(text), 0, "dedup", status="")
-            return (
+            stub = (
                 "[tool-slim compacted tool result]\n"
                 f"tool: {tool_name}\n"
                 "mode: dedup\n"
@@ -144,6 +144,12 @@ class ToolSlimPlugin:
                 "reduction_pct_estimate: 100.0\n"
                 f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
             )
+            if tool_name in {"process", "terminal"} and "background process started" in text.lower():
+                stub += (
+                    "action_hint: this output was already returned earlier. If it reports a background "
+                    "process as started/running, DO NOT relaunch it — poll the existing process status instead.\n"
+                )
+            return stub
         bucket[key] = 1
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
             bucket.pop(next(iter(bucket)))
@@ -759,6 +765,14 @@ def _demo() -> None:
     assert other_session is not None and "mode: dedup" not in other_session
     other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
     assert other_tool is not None and "mode: dedup" not in other_tool
+
+    bg_body = '{"output": "Background process started", "session_id": "proc_x", "pid": 1234, "exit_code": 0, "note": "' + "x" * 250 + '"}'
+    first_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")
+    assert first_bg is None
+    second_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")
+    assert second_bg is not None
+    assert "action_hint" in second_bg
+    assert "DO NOT relaunch" in second_bg
 
     small_dup = "ok" * 30
     first_small = plugin.transform_tool_result(tool_name="terminal", result=small_dup, session_id="sessA")
