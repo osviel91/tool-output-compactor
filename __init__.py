@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 
 logger = logging.getLogger("tool-slim")
@@ -148,6 +148,11 @@ class ToolSlimPlugin:
                 stub += (
                     "action_hint: this output was already returned earlier. If it reports a background "
                     "process as started/running, DO NOT relaunch it — poll the existing process status instead.\n"
+                )
+            elif tool_name in {"process", "terminal", "read_file", "search_files"}:
+                stub += (
+                    "action_hint: this exact output was already returned earlier. Do not repeat the same "
+                    "command or read; refer to the earlier result and continue with the next step.\n"
                 )
             return stub
         bucket[key] = 1
@@ -773,6 +778,15 @@ def _demo() -> None:
     assert second_bg is not None
     assert "action_hint" in second_bg
     assert "DO NOT relaunch" in second_bg
+
+    rf_body = '{"content": "file listing ' + "x" * 300 + '", "total_lines": 1}'
+    first_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
+    assert first_rf is None
+    second_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
+    assert second_rf is not None
+    assert "action_hint" in second_rf
+    assert "Do not repeat the same command or read" in second_rf
+
 
     small_dup = "ok" * 30
     first_small = plugin.transform_tool_result(tool_name="terminal", result=small_dup, session_id="sessA")

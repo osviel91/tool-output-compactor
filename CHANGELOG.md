@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4
+
+- Add a general `action_hint` to duplicate-result stubs for `process`, `terminal`, `read_file` and `search_files`, telling the agent not to repeat the same command/read. The background-process hint still fires first when relevant.
+
 ## 0.3.3
 
 - Add an `action_hint` to duplicate-result stubs for background processes so the agent does not relaunch an already-running process.
