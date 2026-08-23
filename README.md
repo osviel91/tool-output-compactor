@@ -41,22 +41,56 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 ## Environment
 
 ```env
+# Master switch. Keep true in normal use; set false to diagnose raw Hermes tool results.
 TOOL_SLIM_ENABLED=true
+
+# Result size that triggers compaction. 4000 is conservative for small-context agents.
+# Recommended: 4000-8000 for small models, 12000-20000 for larger local models.
 TOOL_SLIM_MAX_CHARS=4000
+
+# Character head/tail fallback for unstructured deterministic text compaction.
+# Recommended: 800-2000 each; raise only if command endings keep losing useful context.
 TOOL_SLIM_HEAD_CHARS=1200
 TOOL_SLIM_TAIL_CHARS=1200
+
+# Line head/tail for structured content fields such as read_file outputs and listings.
+# Recommended: head 20-50, tail 10-30. Lower values avoid cutting the final budget.
+TOOL_SLIM_HEAD_LINES=30
+TOOL_SLIM_TAIL_LINES=10
+
+# Max preserved lines matching error/warning/traceback/exit markers.
+# Recommended: 20-80. Raise for noisy test/build logs with many distinct failures.
 TOOL_SLIM_IMPORTANT_LINES=40
+
+# Max object/array entries shown per JSON level before omitting the rest.
+# Recommended: 10-30. Raise for compact API payloads; keep low for huge arrays.
 TOOL_SLIM_JSON_MAX_ITEMS=20
+
+# Print concise compaction diagnostics to stderr in addition to INFO logs.
 TOOL_SLIM_DEBUG=false
+
+# Add a visible notice inside every compacted result. Useful while testing, noisy in daily use.
 TOOL_SLIM_NOTICE_IN_RESULT=false
 
 # Optional OpenAI-compatible compressor. If unset or failing, deterministic compaction is used.
+# Use LLM only for long unstructured output; structured content and failures stay deterministic.
 TOOL_SLIM_LLM_ENABLED=false
 TOOL_SLIM_LLM_BASE_URL=https://example.com/v1
 TOOL_SLIM_LLM_MODEL=compressor
 TOOL_SLIM_LLM_API_KEY=
+
+# LLM request timeout. Recommended: 30s remote, 60-120s for cold local models.
 TOOL_SLIM_LLM_TIMEOUT_SECONDS=30
+
+# Minimum raw result size before LLM is allowed. Below this, deterministic is safer and cheaper.
+# Recommended: 8000-20000. 12000 avoids summarizing medium structured results too early.
+TOOL_SLIM_LLM_MIN_CHARS=12000
+
+# Character budget for the LLM summary body, before preserved deterministic sections are added.
+# Recommended: 1000-3000. Keep below TOOL_SLIM_MAX_CHARS.
 TOOL_SLIM_LLM_MAX_CHARS=2000
+
+# Token cap for the compressor response. Recommended: 400-1000.
 TOOL_SLIM_LLM_MAX_TOKENS=700
 ```
 

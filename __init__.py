@@ -5,11 +5,12 @@ import logging
 import os
 import sys
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 
 logger = logging.getLogger("tool-slim")
@@ -42,6 +43,12 @@ CRITICAL_KEYS = {
     "approval",
     "command",
 }
+
+
+@dataclass(frozen=True)
+class CompactionDecision:
+    mode: str
+    reason: str
 
 
 def _env_int(name: str, default: int) -> int:
@@ -129,13 +136,18 @@ class ToolSlimPlugin:
         if preserved:
             deterministic_body = preserved + "\n\n---\n\n" + deterministic_body
 
-        llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
-        mode = "llm" if llm_body else "deterministic"
+        decision = self._choose_compaction_mode(tool_name, args, parsed, text, status, error_type, error_message)
+        llm_body = None
+        if decision.mode == "llm":
+            llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
+        mode = "hybrid" if llm_body else "deterministic"
         body = llm_body or deterministic_body
 
         header_lines = [
             "[tool-slim compacted tool result]",
             f"tool: {tool_name}",
+            f"mode: {mode}",
+            f"decision_reason: {decision.reason}",
             f"raw_chars: {len(text)}",
             f"target_chars: {max_chars}",
             f"omitted_chars_estimate: {max(0, len(text) - len(body))}",
@@ -158,6 +170,69 @@ class ToolSlimPlugin:
         compacted = compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
         self._log_compaction(tool_name, len(text), len(compacted), mode, status)
         return compacted
+
+    def _choose_compaction_mode(
+        self,
+        tool_name: str,
+        args: Any,
+        parsed: Any,
+        text: str,
+        status: str,
+        error_type: str,
+        error_message: str,
+    ) -> CompactionDecision:
+        checks = (
+            self._decision_failures,
+            self._decision_structured_tool_result,
+            self._decision_structured_text,
+            self._decision_too_small_for_llm,
+            self._decision_llm_available,
+        )
+        for check in checks:
+            decision = check(tool_name, args, parsed, text, status, error_type, error_message)
+            if decision is not None:
+                return decision
+        return CompactionDecision("deterministic", "fallback deterministic")
+
+    def _decision_failures(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if error_type or error_message:
+            return CompactionDecision("deterministic", "tool error metadata")
+        if status and status.lower() not in {"ok", "success", "completed"}:
+            return CompactionDecision("deterministic", "non-success tool status")
+        if isinstance(parsed, dict):
+            exit_code = parsed.get("exit_code", parsed.get("returncode"))
+            if exit_code not in (None, "", 0, "0"):
+                return CompactionDecision("deterministic", "non-zero exit code")
+            if parsed.get("stderr") or parsed.get("error"):
+                return CompactionDecision("deterministic", "stderr or error field")
+        important = self._important_from_value(parsed, 1) if parsed is not None else self._important_lines(text, 1)
+        if important:
+            return CompactionDecision("deterministic", "critical lines present")
+        return None
+
+    def _decision_structured_tool_result(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if isinstance(parsed, dict) and isinstance(parsed.get("content"), str):
+            return CompactionDecision("deterministic", "structured content field")
+        if isinstance(parsed, dict) and isinstance(parsed.get("output"), str) and self._looks_structured(parsed["output"]):
+            return CompactionDecision("deterministic", "structured output field")
+        if tool_name in {"read_file", "glob", "grep"}:
+            return CompactionDecision("deterministic", f"structured tool {tool_name}")
+        return None
+
+    def _decision_structured_text(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if self._looks_structured(text):
+            return CompactionDecision("deterministic", "structured text")
+        return None
+
+    def _decision_too_small_for_llm(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if len(text) < _env_int("TOOL_SLIM_LLM_MIN_CHARS", 12000):
+            return CompactionDecision("deterministic", "below llm minimum")
+        return None
+
+    def _decision_llm_available(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if _env_bool("TOOL_SLIM_LLM_ENABLED"):
+            return CompactionDecision("llm", "large unstructured result")
+        return None
 
     def _try_json(self, text: str) -> Any | None:
         try:
@@ -262,6 +337,10 @@ class ToolSlimPlugin:
             return self._json_leaf(value)
 
         if isinstance(value, dict):
+            if isinstance(value.get("content"), str):
+                return self._compact_structured_text_result(value, "content")
+            if isinstance(value.get("output"), str) and len(value["output"]) > 1000:
+                return self._compact_structured_text_result(value, "output")
             lines = [f"JSON object with {len(value)} keys: {', '.join(map(str, list(value)[:max_items]))}"]
             for key, item in list(value.items())[:max_items]:
                 lines.append(f"- {key}: {self._compact_json(item, depth + 1)}")
@@ -283,6 +362,36 @@ class ToolSlimPlugin:
         text = self._to_text(value).replace("\n", " ")
         return text if len(text) <= 240 else text[:240] + "..."
 
+    def _compact_structured_text_result(self, value: dict[str, Any], key: str) -> str:
+        text = value[key]
+        lines = [f"JSON object with {len(value)} keys: {', '.join(map(str, value.keys()))}"]
+        for meta_key in ("total_lines", "file_size", "truncated", "hint", "is_binary", "is_image", "exit_code", "error", "status"):
+            if meta_key in value:
+                lines.append(f"- {meta_key}: {self._json_leaf(value[meta_key])}")
+        lines.append(f"- {key}:")
+        lines.append(self._compact_lines(text))
+        return "\n".join(lines)
+
+    def _compact_lines(self, text: str) -> str:
+        all_lines = text.splitlines()
+        if not all_lines:
+            return ""
+        head = _env_int("TOOL_SLIM_HEAD_LINES", 30)
+        tail = _env_int("TOOL_SLIM_TAIL_LINES", 10)
+        important = self._important_lines(text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
+
+        parts = []
+        if important:
+            parts.append("Important lines:\n" + "\n".join(important))
+        if len(all_lines) <= head + tail:
+            parts.append("Lines:\n" + "\n".join(all_lines))
+        else:
+            omitted = len(all_lines) - head - tail
+            parts.append(f"Head lines 1-{head}:\n" + "\n".join(all_lines[:head]))
+            parts.append(f"... {omitted} lines omitted ...")
+            parts.append(f"Tail lines {len(all_lines) - tail + 1}-{len(all_lines)}:\n" + "\n".join(all_lines[-tail:]))
+        return "\n\n".join(parts)
+
     def _compact_text(self, text: str) -> str:
         head_chars = _env_int("TOOL_SLIM_HEAD_CHARS", 1200)
         tail_chars = _env_int("TOOL_SLIM_TAIL_CHARS", 1200)
@@ -295,6 +404,16 @@ class ToolSlimPlugin:
         parts.append("Head:\n" + text[:head_chars])
         parts.append("Tail:\n" + text[-tail_chars:])
         return "\n\n---\n\n".join(parts)
+
+    def _looks_structured(self, text: str) -> bool:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) < 8:
+            return False
+        short = sum(1 for line in lines if len(line) <= 180)
+        paths = sum(1 for line in lines if "/" in line or "\\" in line)
+        numbered = sum(1 for line in lines if line[:1].isdigit() or line.startswith(("- ", "* ", "|")))
+        file_like = sum(1 for line in lines if any(line.lower().endswith(ext) for ext in (".py", ".js", ".ts", ".json", ".yaml", ".yml", ".txt", ".md", ".mp3", ".mp4", ".log")))
+        return short / len(lines) >= 0.75 and (paths + numbered + file_like) >= 3
 
     def _important_lines(self, text: str, limit: int) -> list[str]:
         lines = []
@@ -429,18 +548,44 @@ def _demo() -> None:
     compact_action = plugin.transform_tool_result(tool_name="terminal", args={"command": "python script.py"}, result=action_json)
     assert compact_action is not None
     assert "Preserved action facts" in compact_action
+    assert "mode: deterministic" in compact_action
+    assert "decision_reason: non-zero exit code" in compact_action
     assert "args.command: python script.py" in compact_action
     assert "exit_code: 7" in compact_action
     assert "stderr: fatal: action failed" in compact_action
+
+    listing = "\n".join(f"{i}|{i:02d} - Artist - Track {i} - long sortable library row.mp3" for i in range(1, 121))
+    read_file_result = {
+        "content": listing,
+        "total_lines": 120,
+        "file_size": len(listing),
+        "truncated": False,
+        "is_binary": False,
+        "is_image": False,
+    }
+    os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
+    os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
+    os.environ["TOOL_SLIM_LLM_MODEL"] = "mock"
+    plugin._call_llm = lambda *_: "bad summary"  # type: ignore[method-assign]
+    compact_read = plugin.transform_tool_result(tool_name="read_file", args={"path": "/tmp/listing.txt"}, result=read_file_result)
+    assert compact_read is not None
+    assert "mode: deterministic" in compact_read
+    assert "decision_reason: structured content field" in compact_read
+    assert "Head lines 1-30" in compact_read
+    assert "Tail lines 111-120" in compact_read
+    assert "01 - Artist - Track 1 - long sortable library row.mp3" in compact_read
+    assert "120 - Artist - Track 120 - long sortable library row.mp3" in compact_read
+    assert "bad summary" not in compact_read
 
     os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
     os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
     os.environ["TOOL_SLIM_LLM_MODEL"] = "mock"
     plugin._call_llm = lambda *_: "kept useful summary"  # type: ignore[method-assign]
-    compact_llm = plugin.transform_tool_result(tool_name="terminal", result=large)
+    unstructured = "This is a long narrative build log section without structured rows.\n" * 400
+    compact_llm = plugin.transform_tool_result(tool_name="terminal", result=unstructured)
     assert compact_llm is not None
-    assert "Preserved critical lines" in compact_llm
-    assert "ERROR: useful failure" in compact_llm
+    assert "mode: hybrid" in compact_llm
+    assert "decision_reason: large unstructured result" in compact_llm
     assert "LLM summary" in compact_llm
     assert "kept useful summary" in compact_llm
 
