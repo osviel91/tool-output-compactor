@@ -126,6 +126,24 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 - No dependency on fast-brain.
 - No raw-output archive.
 
+## Responsibility (Bounded Context)
+
+`tool-slim` exists for one purpose: **keep the model's active context bounded without losing information that matters**. Its only lever is deciding what content enters the context (`transform_tool_result`).
+
+It is responsible for:
+
+- Compacting oversized results while preserving critical facts (errors, paths, commands, decisions).
+- Surfacing its own impact so the model and the human can see it (banner + KPIs).
+- Not letting duplicate tool output re-enter context (`TOOL_SLIM_DEDUP`).
+
+It is **not** responsible for:
+
+- Stopping, managing or relaunching background tasks. That is the agent's job (via `process` with `notify_on_complete`) and Hermes' `tool_loop_guardrails`.
+- Telling the agent what to do. The dedup stub is informational (`note: this exact output has been returned N times this session`) — it surfaces the pattern as a fact, never as a directive like "do not relaunch". Behavior decisions stay with the agent and Hermes.
+- Fixing prompt design. A task that demands immediate confirmation of a long-running result (e.g. "only answer once track 022 shows SUCCESS") pushes an agent into relaunch loops; that is a prompt/verification design problem, not a plugin one.
+
+When adding features, ask: "does this preserve or surface information for the model?" If the answer is behavioral steering or task management, it belongs elsewhere.
+
 ## Example Results
 
 Small successful output, under budget:

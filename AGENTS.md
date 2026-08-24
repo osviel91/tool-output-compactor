@@ -130,6 +130,27 @@ When diagnosing "session ended without finishing" or "context overflow":
 
 Local omlx model windows (verified against `/v1/models`): `main`=65536, `advanced-vision`=65536, `assistive`/`reasoning`/`fast`/`operator`=131072, `compressor`/`embedding`/`whisper`=32768.
 
+## Responsibility (Bounded Context)
+
+The plugin's only job is to keep the model's active context bounded without losing relevant information. Its single lever is `transform_tool_result` — deciding what content the model sees.
+
+- It preserves critical facts (errors, paths, commands, decisions) inside compacted output.
+- It surfaces its own impact (banner + KPIs) and does not let duplicate output re-enter context (`TOOL_SLIM_DEDUP`).
+
+It is NOT responsible for:
+
+- Stopping, managing or relaunching background tasks. That is the agent's job (via `process` with `notify_on_complete`) and Hermes' `tool_loop_guardrails`.
+- Directing the agent. The dedup stub is informational only — `note: this exact output has been returned N times this session` — never a directive like "do not relaunch". Behavior decisions belong to the agent and Hermes.
+- Fixing prompt design. A prompt that requires immediate confirmation of a long-running result (e.g. "only answer when track 022 shows SUCCESS") pushes the agent into relaunch loops; that is a verification-design problem, not a plugin problem.
+
+Future-feature test: "does this preserve or surface information for the model?" If it steers behavior or manages tasks, it does not belong in `tool-slim`.
+
+### Lessons From Real Sessions
+
+- An agent asked to download 120 YouTube tracks launched the script 2-5 times in background. Exact-output dedup could not help because each launch returned a different `pid`/`session_id`; and a directive hint ("DO NOT relaunch") was the wrong tool anyway. The real fix was the prompt: launch once in background and poll with `process`, do not demand an immediate success confirmation.
+- Deduplicating cheap verification steps (compile/deps checks) can backfire: the stub removes the positive confirmation the agent is seeking, reinforcing re-execution. Prefer deduping large repeated results over small check outputs.
+- A session overflowed (`65986 > 65536`) not because of repetition but because Hermes assumed a 256k window. Always pin real context lengths (see Context Heuristic).
+
 ## Test Command
 
 ```bash
