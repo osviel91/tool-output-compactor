@@ -134,7 +134,16 @@ class ToolSlimPlugin:
         if count:
             bucket[key] = count + 1
             self._log_compaction(tool_name, len(text), 0, "dedup", status="")
-            stub = (
+            if os.environ.get("TOOL_SLIM_DEDUP_MODE", "stub").lower() == "minimal":
+                return (
+                    "[tool-slim duplicate omitted]\n"
+                    f"tool: {tool_name}\n"
+                    "mode: dedup\n"
+                    f"raw_chars: {len(text)}\n"
+                    f"saved_chars_estimate: {len(text)}\n"
+                    "reduction_pct_estimate: 100.0\n"
+                )
+            return (
                 "[tool-slim compacted tool result]\n"
                 f"tool: {tool_name}\n"
                 "mode: dedup\n"
@@ -145,7 +154,6 @@ class ToolSlimPlugin:
                 f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
                 f"note: this exact output has been returned {count + 1} times this session; see the first occurrence above.\n"
             )
-            return stub
         bucket[key] = 1
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
             bucket.pop(next(iter(bucket)))
@@ -761,6 +769,20 @@ def _demo() -> None:
     assert other_session is not None and "mode: dedup" not in other_session
     other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
     assert other_tool is not None and "mode: dedup" not in other_tool
+
+    os.environ["TOOL_SLIM_DEDUP_MODE"] = "minimal"
+    min_plugin = ToolSlimPlugin()
+    first_min = min_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessMin")
+    assert first_min is not None
+    second_min = min_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessMin")
+    assert second_min is not None
+    assert "duplicate omitted" in second_min
+    assert "mode: dedup" in second_min
+    assert "reduction_pct_estimate: 100.0" in second_min
+    assert "note:" not in second_min
+    assert "see above" not in second_min
+    assert "times this session" not in second_min
+    os.environ.pop("TOOL_SLIM_DEDUP_MODE", None)
 
     bg_body = '{"output": "Background process started", "session_id": "proc_x", "pid": 1234, "exit_code": 0, "note": "' + "x" * 250 + '"}'
     first_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")

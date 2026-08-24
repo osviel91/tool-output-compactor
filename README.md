@@ -233,6 +233,10 @@ TOOL_SLIM_IMPORTANT_LINES=40
 # with a small back-reference stub to avoid context bloat from repeated identical output.
 TOOL_SLIM_DEDUP=true
 
+# Dedup output style. stub (default) keeps a back-reference note for full traceability;
+# minimal keeps only a factual marker (no "see above"/"seen N times") to avoid steering the model.
+TOOL_SLIM_DEDUP_MODE=stub
+
 # Minimum result size before duplicate detection applies. Aligns with Hermes' prune threshold.
 TOOL_SLIM_DEDUP_MIN_CHARS=200
 
