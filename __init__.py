@@ -70,6 +70,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class ToolSlimPlugin:
     def __init__(self) -> None:
         self._seen: dict[str, dict[str, int]] = {}
+        self._seen_call_ids: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -85,21 +86,38 @@ class ToolSlimPlugin:
         error_type: str = "",
         error_message: str = "",
         session_id: str = "",
+        tool_call_id: str = "",
         **_: Any,
     ) -> str | None:
         if os.environ.get("TOOL_SLIM_ENABLED", "true").lower() in {"0", "false", "no", "off"}:
+            self._audit_decision(tool_name or "unknown", "unchanged", "disabled", 0, status)
             return None
 
         text = self._to_text(result)
+        if tool_call_id:
+            call_key = f"{session_id}:{tool_name or 'unknown'}:{tool_call_id}"
+            if call_key in self._seen_call_ids:
+                self._audit_decision(tool_name or "unknown", "unchanged", "duplicate tool_call_id", len(text), status)
+                return None
+            self._seen_call_ids.add(call_key)
+
+        background_start = self._background_start_summary(tool_name or "unknown", args, text)
+        if background_start is not None:
+            self._audit_decision(tool_name or "unknown", "normalized", "background process start", len(text), status)
+            return background_start
+
         duplicate = self._dedup(tool_name or "unknown", session_id, text)
         if duplicate is not None:
+            self._audit_decision(tool_name or "unknown", "dedup", "duplicate large tool result", len(text), status)
             return duplicate
 
         max_chars = _env_int("TOOL_SLIM_MAX_CHARS", 4000)
         if len(text) <= max_chars:
+            self._audit_decision(tool_name or "unknown", "unchanged", "below max chars", len(text), status)
             return None
         min_saving = _env_int("TOOL_SLIM_MIN_SAVING_CHARS", 500)
         if len(text) - max_chars < min_saving:
+            self._audit_decision(tool_name or "unknown", "unchanged", "below min saving", len(text), status)
             return None
         if _env_bool("TOOL_SLIM_DEBUG"):
             print(
@@ -123,7 +141,7 @@ class ToolSlimPlugin:
         context bloat from repeated identical tool output."""
         if not _env_bool("TOOL_SLIM_DEDUP", True):
             return None
-        if len(text) < _env_int("TOOL_SLIM_DEDUP_MIN_CHARS", 200):
+        if len(text) < _env_int("TOOL_SLIM_DEDUP_MIN_CHARS", 4000):
             return None
         if not session_id:
             return None
@@ -158,6 +176,38 @@ class ToolSlimPlugin:
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
             bucket.pop(next(iter(bucket)))
         return None
+
+    def _background_start_summary(self, tool_name: str, args: Any, text: str) -> str | None:
+        if tool_name != "terminal":
+            return None
+        parsed = self._try_json(text)
+        if not isinstance(parsed, dict):
+            return None
+        output = parsed.get("output")
+        if output not in {"Background process started", "Background process already running"}:
+            return None
+        event = "background_process_already_running" if parsed.get("reused_existing") else "background_process_started"
+
+        lines = [
+            "[tool-slim normalized background process start]",
+            f"event: {event}",
+            f"tool: {tool_name}",
+        ]
+        command = self._arg_value(args, "command")
+        for key in ("session_id", "pid", "exit_code", "notify_on_complete", "reused_existing"):
+            if key in parsed:
+                lines.append(f"{key}: {parsed[key]}")
+        if command:
+            lines.append(f"command: {self._one_line(command, 1000)}")
+        if parsed.get("error"):
+            lines.append(f"error: {self._one_line(parsed['error'], 500)}")
+        return "\n".join(lines) + "\n"
+
+    def _arg_value(self, args: Any, key: str) -> str:
+        if isinstance(args, dict):
+            value = args.get(key)
+            return value if isinstance(value, str) else ""
+        return ""
 
     def _to_text(self, result: Any) -> str:
         if isinstance(result, str):
@@ -343,6 +393,17 @@ class ToolSlimPlugin:
         message = (
             f"compacted tool={tool_name} raw_chars={raw_chars} "
             f"output_chars={output_chars} mode={mode} status={status or 'unknown'}"
+        )
+        logger.info(message)
+        if _env_bool("TOOL_SLIM_DEBUG"):
+            print(f"[tool-slim] {message}", file=sys.stderr)
+
+    def _audit_decision(self, tool_name: str, action: str, reason: str, raw_chars: int, status: str) -> None:
+        if not _env_bool("TOOL_SLIM_AUDIT"):
+            return
+        message = (
+            f"decision tool={tool_name} action={action} reason={reason} "
+            f"raw_chars={raw_chars} status={status or 'unknown'}"
         )
         logger.info(message)
         if _env_bool("TOOL_SLIM_DEBUG"):
@@ -749,6 +810,24 @@ def _demo() -> None:
     small = "ok"
     assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
 
+    bg_start = '{"output": "Background process started", "session_id": "proc_abc", "pid": 123, "exit_code": 0, "error": null, "notify_on_complete": true}'
+    bg_summary = plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "python3 worker.py", "background": True},
+        result=bg_start,
+    )
+    assert bg_summary is not None
+    assert "background_process_started" in bg_summary
+    assert "session_id: proc_abc" in bg_summary
+    assert "pid: 123" in bg_summary
+    assert "command: python3 worker.py" in bg_summary
+    assert "DO NOT" not in bg_summary
+    bg_reused = '{"output": "Background process already running", "session_id": "proc_abc", "pid": 123, "exit_code": 0, "error": null, "notify_on_complete": true, "reused_existing": true}'
+    bg_reused_summary = plugin.transform_tool_result(tool_name="terminal", args={"command": "python3 worker.py"}, result=bg_reused)
+    assert bg_reused_summary is not None
+    assert "background_process_already_running" in bg_reused_summary
+    assert "reused_existing: True" in bg_reused_summary
+
     barely_over = "x" * (_env_int("TOOL_SLIM_MAX_CHARS", 4000) + 100)
     assert plugin.transform_tool_result(tool_name="terminal", result=barely_over) is None
 
@@ -770,6 +849,14 @@ def _demo() -> None:
     other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
     assert other_tool is not None and "mode: dedup" not in other_tool
 
+    call_plugin = ToolSlimPlugin()
+    first_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call1")
+    second_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call1")
+    third_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call2")
+    assert first_call is not None and "mode: dedup" not in first_call
+    assert second_call is None
+    assert third_call is not None and "mode: dedup" in third_call
+
     os.environ["TOOL_SLIM_DEDUP_MODE"] = "minimal"
     min_plugin = ToolSlimPlugin()
     first_min = min_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessMin")
@@ -788,20 +875,13 @@ def _demo() -> None:
     first_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")
     assert first_bg is None
     second_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")
-    assert second_bg is not None
-    assert "note:" in second_bg
-    assert "times this session" in second_bg
-    assert "action_hint" not in second_bg
-    assert "DO NOT relaunch" not in second_bg
+    assert second_bg is None
 
     rf_body = '{"content": "file listing ' + "x" * 300 + '", "total_lines": 1}'
     first_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
     assert first_rf is None
     second_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
-    assert second_rf is not None
-    assert "note:" in second_rf
-    assert "times this session" in second_rf
-    assert "action_hint" not in second_rf
+    assert second_rf is None
 
 
     small_dup = "ok" * 30

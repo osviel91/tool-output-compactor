@@ -99,6 +99,7 @@ By default, compaction is deterministic and dependency-free:
 - Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
 - The compacted result always says compaction happened and reports omitted size.
 - The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
+- Terminal background-start results are normalized into a short factual record (`event`, `session_id`, `pid`, `command`, `notify_on_complete`) so agents can see the process handle clearly without receiving behavior directives.
 
 Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-slim` falls back to deterministic compaction.
 
@@ -125,6 +126,24 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 - No embeddings.
 - No dependency on fast-brain.
 - No raw-output archive.
+
+## Background Process Relaunches
+
+`tool-slim` can make background-process handles clearer, but it should not manage processes. The plugin now normalizes terminal background starts into factual records such as:
+
+```txt
+[tool-slim normalized background process start]
+event: background_process_started
+tool: terminal
+session_id: proc_...
+pid: 12345
+notify_on_complete: True
+command: python3 worker.py
+```
+
+If an agent repeatedly launches the same long-running command, the robust fix belongs in Hermes runtime: `terminal(background=true)` should reuse an existing live process with the same `session_key`, `task_id`, `cwd` and `command` instead of spawning another copy. `tool-slim` only sees the result after the launch already happened, so it can preserve/surface the handle but cannot prevent duplicate processes. A local Hermes patch for this lives at `patches/hermes-background-dedup.patch` and can be applied from a Hermes checkout with `patch -p1 < /path/to/tool-slim/patches/hermes-background-dedup.patch`.
+
+For small-context agents, keep `TOOL_SLIM_DEDUP_MIN_CHARS=4000` or higher unless real traces prove otherwise. Lower thresholds can hide short success confirmations and background handles, which may make weaker models verify or relaunch instead of polling the existing process.
 
 ## Responsibility (Bounded Context)
 
@@ -237,8 +256,12 @@ TOOL_SLIM_DEDUP=true
 # minimal keeps only a factual marker (no "see above"/"seen N times") to avoid steering the model.
 TOOL_SLIM_DEDUP_MODE=stub
 
-# Minimum result size before duplicate detection applies. Aligns with Hermes' prune threshold.
-TOOL_SLIM_DEDUP_MIN_CHARS=200
+# Minimum result size before duplicate detection applies.
+# Keep this above cheap verification/control output: deduping small confirmations
+# (dependency checks, directory checks, background-start handles) can make agents
+# retry or relaunch instead of progressing. Use lower values only if repeated
+# small outputs are proven to be the real context problem.
+TOOL_SLIM_DEDUP_MIN_CHARS=4000
 
 # How many unique results to remember per session for duplicate detection.
 TOOL_SLIM_DEDUP_WINDOW=50
@@ -253,6 +276,10 @@ TOOL_SLIM_JSON_MAX_ITEMS=20
 
 # Print concise compaction diagnostics to stderr in addition to INFO logs.
 TOOL_SLIM_DEBUG=false
+
+# Log every transform decision without changing tool output. Useful to separate
+# plugin behavior from model/Hermes issues during live-session audits.
+TOOL_SLIM_AUDIT=false
 
 # Add a visible notice inside every compacted result. Useful while testing, noisy in daily use.
 TOOL_SLIM_NOTICE_IN_RESULT=false
@@ -335,6 +362,18 @@ A successful compaction log looks like:
 tool-slim: compacted tool=skill_view raw_chars=4941 output_chars=3002 mode=deterministic status=ok
 ```
 
+Enable decision audit logs when you need to prove whether `tool-slim` was involved:
+
+```env
+TOOL_SLIM_AUDIT=true
+```
+
+Audit logs are informational only and do not change tool results. Example:
+
+```txt
+tool-slim: decision tool=terminal action=unchanged reason=below max chars raw_chars=604 status=unknown
+```
+
 Inspect a session's persisted tool messages:
 
 ```bash
@@ -375,6 +414,14 @@ Real Hermes session diagnostics:
 ```bash
 python3 benchmark.py --session-id SESSION_ID
 ```
+
+The real-session report includes a `diagnosis` line to separate responsibilities:
+
+- `plugin_acted`: persisted tool messages contain `tool-slim` compacted output.
+- `plugin_not_involved`: no compacted messages and no large uncompressed tool results.
+- `model_tool_schema_error`: assistant tool calls put shell syntax such as `&&` into `workdir`, and Hermes blocked it.
+- `hermes_loop_guard_warned`: Hermes emitted tool-loop warnings.
+- `hermes_loop_guard_ignored`: repeated exact failure warnings continued several times.
 
 Machine-readable output for dashboards or for giving Hermes its own KPIs:
 

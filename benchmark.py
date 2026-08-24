@@ -179,6 +179,10 @@ def analyze_session(session_id: str, db_path: Path, max_chars: int) -> dict[str,
             "SELECT id, tool_name, content FROM messages WHERE session_id=? AND role='tool' ORDER BY id",
             (session_id,),
         ).fetchall()
+        bad_workdir_calls = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id=? AND role='assistant' AND tool_calls LIKE '%workdir%' AND tool_calls LIKE '%&&%'",
+            (session_id,),
+        ).fetchone()[0]
     finally:
         conn.close()
 
@@ -186,12 +190,22 @@ def analyze_session(session_id: str, db_path: Path, max_chars: int) -> dict[str,
     large_uncompacted = []
     compacted = []
     estimated_saved = 0
+    blocked_workdir = 0
+    tool_loop_warnings = 0
+    repeated_exact_warnings = 0
     for message_id, tool_name, content in rows:
         tool_name = tool_name or "unknown"
         length = len(content or "")
         item = tools.setdefault(tool_name, {"count": 0, "chars": 0, "compacted": 0, "large_uncompacted": 0})
         item["count"] += 1
         item["chars"] += length
+        text = content or ""
+        if "Blocked: workdir contains disallowed character" in text:
+            blocked_workdir += 1
+        if "Tool loop warning" in text:
+            tool_loop_warnings += 1
+        if "repeated_exact_failure_warning" in text:
+            repeated_exact_warnings += 1
         if content and HEADER in content:
             item["compacted"] += 1
             compacted.append(message_id)
@@ -212,6 +226,17 @@ def analyze_session(session_id: str, db_path: Path, max_chars: int) -> dict[str,
         "compacted_messages": len(compacted),
         "estimated_saved_chars": estimated_saved,
         "large_uncompacted": large_uncompacted,
+        "diagnosis": {
+            "plugin_acted": bool(compacted),
+            "plugin_not_involved": not compacted and not large_uncompacted,
+            "model_tool_schema_error": bool(bad_workdir_calls and blocked_workdir),
+            "hermes_loop_guard_warned": tool_loop_warnings > 0,
+            "hermes_loop_guard_ignored": repeated_exact_warnings >= 3,
+            "blocked_workdir_results": blocked_workdir,
+            "assistant_bad_workdir_calls": bad_workdir_calls,
+            "tool_loop_warnings": tool_loop_warnings,
+            "repeated_exact_warnings": repeated_exact_warnings,
+        },
         "tools": tools,
     }
 
@@ -226,6 +251,11 @@ def print_report(report: dict[str, Any]) -> None:
         return
 
     print(f"session: {report['session_id']} messages={report['messages_total']} tool_messages={report['tool_messages']} tool_chars={report['tool_chars']} compacted={report['compacted_messages']} estimated_saved={report['estimated_saved_chars']}")
+    diagnosis = report.get("diagnosis", {})
+    if diagnosis:
+        flags = ", ".join(name for name, value in diagnosis.items() if isinstance(value, bool) and value) or "none"
+        print(f"diagnosis: {flags}")
+        print(f"diagnosis_counts: blocked_workdir={diagnosis['blocked_workdir_results']} bad_workdir_calls={diagnosis['assistant_bad_workdir_calls']} loop_warnings={diagnosis['tool_loop_warnings']} repeated_exact={diagnosis['repeated_exact_warnings']}")
     if report["large_uncompacted"]:
         print("large_uncompacted:")
         for item in report["large_uncompacted"]:
