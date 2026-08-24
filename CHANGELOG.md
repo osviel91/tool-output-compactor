@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+- Replace directive `action_hint`s in duplicate-result stubs with a single informational `note` (output seen N times; see first occurrence). `tool-slim` surfaces the pattern but does not tell the agent what to do — behavior decisions stay with the agent and Hermes guardrails.
+
 ## 0.3.4
 
 - Add a general `action_hint` to duplicate-result stubs for `process`, `terminal`, `read_file` and `search_files`, telling the agent not to repeat the same command/read. The background-process hint still fires first when relevant.

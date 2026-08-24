@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 
 logger = logging.getLogger("tool-slim")
@@ -143,17 +143,8 @@ class ToolSlimPlugin:
                 f"saved_chars_estimate: {len(text)}\n"
                 "reduction_pct_estimate: 100.0\n"
                 f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
+                f"note: this exact output has been returned {count + 1} times this session; see the first occurrence above.\n"
             )
-            if tool_name in {"process", "terminal"} and "background process started" in text.lower():
-                stub += (
-                    "action_hint: this output was already returned earlier. If it reports a background "
-                    "process as started/running, DO NOT relaunch it — poll the existing process status instead.\n"
-                )
-            elif tool_name in {"process", "terminal", "read_file", "search_files"}:
-                stub += (
-                    "action_hint: this exact output was already returned earlier. Do not repeat the same "
-                    "command or read; refer to the earlier result and continue with the next step.\n"
-                )
             return stub
         bucket[key] = 1
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
@@ -776,16 +767,19 @@ def _demo() -> None:
     assert first_bg is None
     second_bg = plugin.transform_tool_result(tool_name="process", result=bg_body, session_id="sessC")
     assert second_bg is not None
-    assert "action_hint" in second_bg
-    assert "DO NOT relaunch" in second_bg
+    assert "note:" in second_bg
+    assert "times this session" in second_bg
+    assert "action_hint" not in second_bg
+    assert "DO NOT relaunch" not in second_bg
 
     rf_body = '{"content": "file listing ' + "x" * 300 + '", "total_lines": 1}'
     first_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
     assert first_rf is None
     second_rf = plugin.transform_tool_result(tool_name="read_file", result=rf_body, session_id="sessD")
     assert second_rf is not None
-    assert "action_hint" in second_rf
-    assert "Do not repeat the same command or read" in second_rf
+    assert "note:" in second_rf
+    assert "times this session" in second_rf
+    assert "action_hint" not in second_rf
 
 
     small_dup = "ok" * 30
