@@ -106,7 +106,7 @@ class ToolSlimPlugin:
             self._audit_decision(tool_name or "unknown", "normalized", "background process start", len(text), status)
             return background_start
 
-        duplicate = self._dedup(tool_name or "unknown", session_id, text)
+        duplicate = self._dedup(tool_name or "unknown", session_id, text, args=args, status=status)
         if duplicate is not None:
             self._audit_decision(tool_name or "unknown", "dedup", "duplicate large tool result", len(text), status)
             return duplicate
@@ -135,7 +135,7 @@ class ToolSlimPlugin:
             error_message=error_message,
         )
 
-    def _dedup(self, tool_name: str, session_id: str, text: str) -> str | None:
+    def _dedup(self, tool_name: str, session_id: str, text: str, args: Any = None, status: str = "") -> str | None:
         """Replace an exact repeat of a tool result (same session, same tool,
         same content) with a small back-reference stub. Proactive guard against
         context bloat from repeated identical tool output."""
@@ -151,27 +151,34 @@ class ToolSlimPlugin:
         count = bucket.get(key, 0)
         if count:
             bucket[key] = count + 1
-            self._log_compaction(tool_name, len(text), 0, "dedup", status="")
+            fact_lines = self._action_facts(tool_name, args, self._try_json(text))
+            if status:
+                fact_lines.append(f"status: {status}")
+            facts = "Preserved action facts:\n" + "\n".join(fact_lines) + "\n" if fact_lines else f"tool: {tool_name}\n"
             if os.environ.get("TOOL_SLIM_DEDUP_MODE", "stub").lower() == "minimal":
-                return (
+                stub = (
                     "[tool-slim duplicate omitted]\n"
-                    f"tool: {tool_name}\n"
                     "mode: dedup\n"
+                    f"{facts}"
                     f"raw_chars: {len(text)}\n"
                     f"saved_chars_estimate: {len(text)}\n"
                     "reduction_pct_estimate: 100.0\n"
                 )
-            return (
+                self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
+                return stub
+            stub = (
                 "[tool-slim compacted tool result]\n"
-                f"tool: {tool_name}\n"
                 "mode: dedup\n"
                 "decision_reason: duplicate tool result\n"
+                f"{facts}"
                 f"raw_chars: {len(text)}\n"
                 f"saved_chars_estimate: {len(text)}\n"
                 "reduction_pct_estimate: 100.0\n"
                 f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
                 f"note: this exact output has been returned {count + 1} times this session; see the first occurrence above.\n"
             )
+            self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
+            return stub
         bucket[key] = 1
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
             bucket.pop(next(iter(bucket)))
@@ -848,6 +855,18 @@ def _demo() -> None:
     assert other_session is not None and "mode: dedup" not in other_session
     other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
     assert other_tool is not None and "mode: dedup" not in other_tool
+
+    dedup_read = ToolSlimPlugin()
+    read_body = {"content": "row\n" * 2000, "total_lines": 2000, "file_size": 8000, "truncated": False}
+    first_read = dedup_read.transform_tool_result(tool_name="read_file", args={"path": "/tmp/listing.txt"}, result=read_body, session_id="sessRead", status="ok")
+    second_read = dedup_read.transform_tool_result(tool_name="read_file", args={"path": "/tmp/listing.txt"}, result=read_body, session_id="sessRead", status="ok")
+    assert first_read is not None and "mode: dedup" not in first_read
+    assert second_read is not None and len(second_read) > 0
+    assert "mode: dedup" in second_read
+    assert "args.path: /tmp/listing.txt" in second_read
+    assert "status: ok" in second_read
+    assert "raw_chars:" in second_read
+    assert "saved_chars_estimate:" in second_read
 
     call_plugin = ToolSlimPlugin()
     first_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call1")
