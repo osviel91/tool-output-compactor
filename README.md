@@ -226,13 +226,14 @@ Tail lines 111-120:
 # Master switch. Keep true in normal use; set false to diagnose raw Hermes tool results.
 TOOL_SLIM_ENABLED=true
 
-# Result size that triggers compaction. 4000 is conservative for small-context agents.
-# Recommended: 4000-8000 for small models, 12000-20000 for larger local models.
-TOOL_SLIM_MAX_CHARS=4000
+# Result size that triggers compaction. This less-aggressive profile is tuned for
+# remote Hermes long-running tasks where preserving medium outputs matters.
+# Recommended: 4000-8000 for tight models, 12000 for long-task diagnostics.
+TOOL_SLIM_MAX_CHARS=12000
 
 # Skip compaction when the potential saving (raw_chars - max_chars) is below this.
 # Prevents truncating useful output for a negligible gain (e.g. 4200 -> 4000).
-TOOL_SLIM_MIN_SAVING_CHARS=500
+TOOL_SLIM_MIN_SAVING_CHARS=2000
 
 # Character head/tail fallback for unstructured deterministic text compaction.
 # Recommended: 800-2000 each; raise only if command endings keep losing useful context.
@@ -264,7 +265,7 @@ TOOL_SLIM_DEDUP_MODE=stub
 TOOL_SLIM_DEDUP_MIN_CHARS=4000
 
 # How many unique results to remember per session for duplicate detection.
-TOOL_SLIM_DEDUP_WINDOW=50
+TOOL_SLIM_DEDUP_WINDOW=100
 
 # How many last assistant messages to preserve in a session_search result.
 # Raise for "repeat the same process" tasks where the workflow steps matter.
@@ -281,18 +282,18 @@ TOOL_SLIM_DEBUG=false
 # plugin behavior from model/Hermes issues during live-session audits.
 TOOL_SLIM_AUDIT=false
 
-# Add a visible notice inside every compacted result. Useful while testing, noisy in daily use.
-TOOL_SLIM_NOTICE_IN_RESULT=false
+# Add a visible notice inside every compacted result. Useful during diagnostics.
+TOOL_SLIM_NOTICE_IN_RESULT=true
 
 # Optional OpenAI-compatible compressor. If unset or failing, deterministic compaction is used.
 # Use LLM only for long unstructured output; structured content and failures stay deterministic.
-TOOL_SLIM_LLM_ENABLED=false
+TOOL_SLIM_LLM_ENABLED=true
 TOOL_SLIM_LLM_BASE_URL=https://example.com/v1
 TOOL_SLIM_LLM_MODEL=compressor
 TOOL_SLIM_LLM_API_KEY=
 
-# LLM request timeout. Recommended: 30s remote, 60-120s for cold local models.
-TOOL_SLIM_LLM_TIMEOUT_SECONDS=30
+# LLM request timeout. Recommended: 30-60s remote, 60-120s for cold local models.
+TOOL_SLIM_LLM_TIMEOUT_SECONDS=60
 
 # Minimum raw result size before LLM is allowed. Below this, deterministic is safer and cheaper.
 # Recommended: 8000-20000. 12000 avoids summarizing medium structured results too early.
@@ -300,7 +301,7 @@ TOOL_SLIM_LLM_MIN_CHARS=12000
 
 # Character budget for the LLM summary body, before preserved deterministic sections are added.
 # Recommended: 1000-3000. Keep below TOOL_SLIM_MAX_CHARS.
-TOOL_SLIM_LLM_MAX_CHARS=2000
+TOOL_SLIM_LLM_MAX_CHARS=3000
 
 # Token cap for the compressor response. Recommended: 400-1000.
 TOOL_SLIM_LLM_MAX_TOKENS=700
