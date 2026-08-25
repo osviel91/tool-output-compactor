@@ -1,0 +1,63 @@
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -998,15 +998,35 @@ class ProcessRegistry:
+         from tools.terminal_tool import _rewrite_compound_background as _rewrite_bg
+ 
+         safe_command = _rewrite_bg(command)
++        resolved_cwd = _resolve_safe_cwd(cwd or os.getcwd())
++
++        with self._lock:
++            for existing in self._running.values():
++                if existing.exited:
++                    continue
++                if (
++                    existing.command == command
++                    and existing.cwd == resolved_cwd
++                    and existing.task_id == task_id
++                    and existing.session_key == session_key
++                    and self._host_pid_is_ours(existing.pid, existing.host_start_time)
++                ):
++                    existing._reused_existing = True
++                    logger.info(
++                        "Reusing existing background process %s for duplicate command",
++                        existing.id,
++                    )
++                    return existing
+ 
+         session = ProcessSession(
+             id=f"proc_{uuid.uuid4().hex[:12]}",
+             command=command,
+             task_id=task_id,
+             session_key=session_key,
+-            cwd=_resolve_safe_cwd(cwd or os.getcwd()),
++            cwd=resolved_cwd,
+             started_at=time.time(),
+         )
++        session._reused_existing = False
+ 
+         pty_scope_attempted = False
+         if use_pty:
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -3116,12 +3116,18 @@ def terminal_tool(
+                     )
+ 
+                 result_data = {
+-                    "output": "Background process started",
++                    "output": (
++                        "Background process already running"
++                        if getattr(proc_session, "_reused_existing", False)
++                        else "Background process started"
++                    ),
+                     "session_id": proc_session.id,
+                     "pid": proc_session.pid,
+                     "exit_code": 0,
+                     "error": None,
+                 }
++                if getattr(proc_session, "_reused_existing", False):
++                    result_data["reused_existing"] = True
+                 # Background spawns detached and returns exit_code 0 immediately;
+                 # it never inline-polls is_interrupted(), so the stale-bit kill
+                 # cannot occur here and this note never co-occurs with rc=130.
