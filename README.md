@@ -1,20 +1,20 @@
-# tool-slim
+# tool-output-compactor
 
 Hermes plugin for compacting large tool results before they are sent back into the model context.
 
 This is intentionally separate from `fast-brain`:
 
 - `fast-brain` handles persistent memory, retrieval, consolidation and context recommendation.
-- `tool-slim` handles active context pressure caused by large tool outputs.
+- `tool-output-compactor` handles active context pressure caused by large tool outputs.
 
 ## Goal
 
-Small-context agents often fail during long tasks because tool results keep accumulating in the active prompt. `tool-slim` uses Hermes' `transform_tool_result` hook to replace oversized tool results with compact summaries before they re-enter conversation context.
+Small-context agents often fail during long tasks because tool results keep accumulating in the active prompt. `tool-output-compactor` uses Hermes' `transform_tool_result` hook to replace oversized tool results with compact summaries before they re-enter conversation context.
 
 ```txt
 Tool runs
   -> raw result
-  -> tool-slim transform_tool_result
+  -> tool-output-compactor transform_tool_result
   -> compact result goes back to Hermes/model context
 ```
 
@@ -22,7 +22,7 @@ This is active-context compaction, not memory. It does not decide what the agent
 
 ## Where It Intervenes In Hermes
 
-Hermes exposes a plugin hook named `transform_tool_result`. `tool-slim` registers for it in `register()`:
+Hermes exposes a plugin hook named `transform_tool_result`. `tool-output-compactor` registers for it in `register()`:
 
 ```python
 ctx.register_hook("transform_tool_result", plugin.transform_tool_result)
@@ -39,16 +39,16 @@ model requests tool
   -> replaced result is persisted and enters model context
 ```
 
-The hook receives keyword arguments such as `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type` and `error_message`. `tool-slim` returns:
+The hook receives keyword arguments such as `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type` and `error_message`. `tool-output-compactor` returns:
 
 - `None` when the result should remain unchanged.
 - `str` when the result should be replaced by a compacted version.
 
-Known Hermes limitation observed in local testing: some inline runtime tools, notably `session_search`, may emit `post_tool_call` without applying `transform_tool_result`. In that case `tool-slim` is installed and working, but the inline tool result can still enter context uncompressed. This should be fixed in Hermes by applying the same transform path to inline tools.
+Known Hermes limitation observed in local testing: some inline runtime tools, notably `session_search`, may emit `post_tool_call` without applying `transform_tool_result`. In that case `tool-output-compactor` is installed and working, but the inline tool result can still enter context uncompressed. This should be fixed in Hermes by applying the same transform path to inline tools.
 
 ## Compaction Flow
 
-`tool-slim` follows a deterministic-first pipeline:
+`tool-output-compactor` follows a deterministic-first pipeline:
 
 ```txt
 raw result
@@ -72,8 +72,8 @@ Decision order:
 Every compacted result starts with a header like:
 
 ```txt
-[tool-slim compacted tool result]
-tool-slim: compacted terminal · 68.3% reduction · saved 8200 chars · deterministic (structured text)
+[tool-output-compactor compacted tool result]
+tool-output-compactor: compacted terminal · 68.3% reduction · saved 8200 chars · deterministic (structured text)
 tool: terminal
 mode: deterministic
 decision_reason: structured text
@@ -101,7 +101,7 @@ By default, compaction is deterministic and dependency-free:
 - The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
 - Terminal background-start results are normalized into a short factual record (`event`, `session_id`, `pid`, `command`, `notify_on_complete`) so agents can see the process handle clearly without receiving behavior directives.
 
-Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-slim` falls back to deterministic compaction.
+Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-output-compactor` falls back to deterministic compaction.
 
 ### What It Preserves
 
@@ -129,10 +129,10 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 
 ## Background Process Relaunches
 
-`tool-slim` can make background-process handles clearer, but it should not manage processes. The plugin now normalizes terminal background starts into factual records such as:
+`tool-output-compactor` can make background-process handles clearer, but it should not manage processes. The plugin now normalizes terminal background starts into factual records such as:
 
 ```txt
-[tool-slim normalized background process start]
+[tool-output-compactor normalized background process start]
 event: background_process_started
 tool: terminal
 session_id: proc_...
@@ -141,13 +141,13 @@ notify_on_complete: True
 command: python3 worker.py
 ```
 
-If an agent repeatedly launches the same long-running command, the robust fix belongs in Hermes runtime: `terminal(background=true)` should reuse an existing live process with the same `session_key`, `task_id`, `cwd` and `command` instead of spawning another copy. `tool-slim` only sees the result after the launch already happened, so it can preserve/surface the handle but cannot prevent duplicate processes. A local Hermes patch for this lives at `patches/hermes-background-dedup.patch` and can be applied from a Hermes checkout with `patch -p1 < /path/to/tool-slim/patches/hermes-background-dedup.patch`.
+If an agent repeatedly launches the same long-running command, the robust fix belongs in Hermes runtime: `terminal(background=true)` should reuse an existing live process with the same `session_key`, `task_id`, `cwd` and `command` instead of spawning another copy. `tool-output-compactor` only sees the result after the launch already happened, so it can preserve/surface the handle but cannot prevent duplicate processes. A local Hermes patch for this lives at `patches/hermes-background-dedup.patch` and can be applied from a Hermes checkout with `patch -p1 < /path/to/tool-output-compactor/patches/hermes-background-dedup.patch`.
 
 For small-context agents, keep `TOOL_SLIM_DEDUP_MIN_CHARS=4000` or higher unless real traces prove otherwise. Lower thresholds can hide short success confirmations and background handles, which may make weaker models verify or relaunch instead of polling the existing process.
 
 ## Responsibility (Bounded Context)
 
-`tool-slim` exists for one purpose: **keep the model's active context bounded without losing information that matters**. Its only lever is deciding what content enters the context (`transform_tool_result`).
+`tool-output-compactor` exists for one purpose: **keep the model's active context bounded without losing information that matters**. Its only lever is deciding what content enters the context (`transform_tool_result`).
 
 It is responsible for:
 
@@ -174,7 +174,7 @@ unchanged
 Large terminal/log output, deterministic:
 
 ```txt
-[tool-slim compacted tool result]
+[tool-output-compactor compacted tool result]
 tool: terminal
 mode: deterministic
 decision_reason: critical lines present
@@ -221,6 +221,8 @@ Tail lines 111-120:
 ```
 
 ## Environment
+
+Environment variables keep the existing `TOOL_SLIM_*` prefix for compatibility.
 
 ```env
 # Master switch. Keep true in normal use; set false to diagnose raw Hermes tool results.
@@ -324,7 +326,7 @@ Do not commit API keys.
 Copy this directory into the Hermes plugins directory:
 
 ```bash
-cp -R tool-slim ~/.hermes/plugins/tool-slim
+cp -R tool-output-compactor ~/.hermes/plugins/tool-output-compactor
 ```
 
 Then enable it in `~/.hermes/config.yaml`:
@@ -332,19 +334,19 @@ Then enable it in `~/.hermes/config.yaml`:
 ```yaml
 plugins:
   enabled:
-    - tool-slim
+    - tool-output-compactor
 ```
 
 Validate installation:
 
 ```bash
-hermes plugins doctor tool-slim
+hermes plugins doctor tool-output-compactor
 ```
 
 If testing from this repo, copy the current files into the local Hermes plugin directory after changes:
 
 ```bash
-cp -R /path/to/tool-slim ~/.hermes/plugins/tool-slim
+cp -R /path/to/tool-output-compactor ~/.hermes/plugins/tool-output-compactor
 ```
 
 Restart the Hermes process/profile after updating plugin files so Python reloads the module.
@@ -354,16 +356,16 @@ Restart the Hermes process/profile after updating plugin files so Python reloads
 Check whether Hermes loaded and used the plugin:
 
 ```bash
-grep "tool-slim" ~/.hermes/logs/agent.log
+grep "tool-output-compactor" ~/.hermes/logs/agent.log
 ```
 
 A successful compaction log looks like:
 
 ```txt
-tool-slim: compacted tool=skill_view raw_chars=4941 output_chars=3002 mode=deterministic status=ok
+tool-output-compactor: compacted tool=skill_view raw_chars=4941 output_chars=3002 mode=deterministic status=ok
 ```
 
-Enable decision audit logs when you need to prove whether `tool-slim` was involved:
+Enable decision audit logs when you need to prove whether `tool-output-compactor` was involved:
 
 ```env
 TOOL_SLIM_AUDIT=true
@@ -372,7 +374,7 @@ TOOL_SLIM_AUDIT=true
 Audit logs are informational only and do not change tool results. Example:
 
 ```txt
-tool-slim: decision tool=terminal action=unchanged reason=below max chars raw_chars=604 status=unknown
+tool-output-compactor: decision tool=terminal action=unchanged reason=below max chars raw_chars=604 status=unknown
 ```
 
 Inspect a session's persisted tool messages:
@@ -384,7 +386,7 @@ sqlite3 ~/.hermes/state.db "SELECT id, role, tool_name, length(content), substr(
 Find compacted results in a session:
 
 ```bash
-sqlite3 ~/.hermes/state.db "SELECT id, tool_name, content FROM messages WHERE session_id='SESSION_ID' AND content LIKE '%[tool-slim compacted tool result]%' ORDER BY id;"
+sqlite3 ~/.hermes/state.db "SELECT id, tool_name, content FROM messages WHERE session_id='SESSION_ID' AND content LIKE '%[tool-output-compactor compacted tool result]%' ORDER BY id;"
 ```
 
 Find large uncompressed tool results that may have bypassed the hook:
@@ -393,7 +395,7 @@ Find large uncompressed tool results that may have bypassed the hook:
 sqlite3 ~/.hermes/state.db "SELECT id, tool_name, length(content) FROM messages WHERE session_id='SESSION_ID' AND role='tool' AND length(content) > 4000 ORDER BY length(content) DESC;"
 ```
 
-If a large result appears without `[tool-slim compacted tool result]`, likely causes are:
+If a large result appears without `[tool-output-compactor compacted tool result]`, likely causes are:
 
 - The result is from an inline Hermes runtime tool that bypasses `transform_tool_result`.
 - The plugin was not enabled or Hermes was not restarted after installation.
@@ -418,7 +420,7 @@ python3 benchmark.py --session-id SESSION_ID
 
 The real-session report includes a `diagnosis` line to separate responsibilities:
 
-- `plugin_acted`: persisted tool messages contain `tool-slim` compacted output.
+- `plugin_acted`: persisted tool messages contain `tool-output-compactor` compacted output.
 - `plugin_not_involved`: no compacted messages and no large uncompressed tool results.
 - `model_tool_schema_error`: assistant tool calls put shell syntax such as `&&` into `workdir`, and Hermes blocked it.
 - `hermes_loop_guard_warned`: Hermes emitted tool-loop warnings.
@@ -437,7 +439,7 @@ Primary KPIs:
 - `saved_chars`: raw characters avoided in model context.
 - `critical_marker_failures`: required facts/errors lost by synthetic benchmark cases; target `0`.
 - `over_budget`: compacted outputs still above `TOOL_SLIM_MAX_CHARS`; target `0`.
-- `large_uncompacted`: real session tool results above budget that did not contain a `tool-slim` header; target `0`.
+- `large_uncompacted`: real session tool results above budget that did not contain a `tool-output-compactor` header; target `0`.
 - `compacted_messages`: count of real tool messages compacted in a session.
 
 Runtime KPIs visible to Hermes in each compacted tool result:
@@ -449,16 +451,16 @@ Runtime KPIs visible to Hermes in each compacted tool result:
 - `mode`: `deterministic` or `hybrid`.
 - `decision_reason`: why that mode was selected.
 
-The benchmark intentionally checks boring invariants, not semantic intelligence. A good run means `tool-slim` saved context while preserving known critical markers. It does not prove that every future task has enough detail; use real-session diagnostics for that.
+The benchmark intentionally checks boring invariants, not semantic intelligence. A good run means `tool-output-compactor` saved context while preserving known critical markers. It does not prove that every future task has enough detail; use real-session diagnostics for that.
 
 ## Development
 
 Run the built-in checks and benchmark:
 
 ```bash
-python3 -m compileall tool-slim
-python3 tool-slim/__init__.py
-python3 tool-slim/benchmark.py
+python3 -m compileall tool-output-compactor
+python3 tool-output-compactor/__init__.py
+python3 tool-output-compactor/benchmark.py
 ```
 
 The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
@@ -467,7 +469,7 @@ Compaction emits an `INFO` log through Python logging. Enable `TOOL_SLIM_DEBUG=t
 
 ## Context Heuristic
 
-`tool-slim` only shrinks what is already there; it cannot fix a model whose real context window is unknown to Hermes. A long agentic session overflowed with `Prompt too long: 65986 tokens exceeds max context window of 65536 tokens` because Hermes had fallen back to a 256k assumption when its probe of the endpoint failed.
+`tool-output-compactor` only shrinks what is already there; it cannot fix a model whose real context window is unknown to Hermes. A long agentic session overflowed with `Prompt too long: 65986 tokens exceeds max context window of 65536 tokens` because Hermes had fallen back to a 256k assumption when its probe of the endpoint failed.
 
 Heuristic to apply on local setups:
 
@@ -475,16 +477,16 @@ Heuristic to apply on local setups:
    - Root model: `model.context_length`.
    - Per-model override inside a custom provider: `custom_providers[].models.<id>.context_length` (this is the single source of truth used by startup, `/model` switch, `/info` and `get_model_context_length`).
 2. **Expect probe failure on non-standard endpoints.** If `agent.log` shows `Could not detect context length ... defaulting to 256,000 tokens (probe-down)`, the window is wrong; compression triggers at `compression.threshold` of the *assumed* window, so an overestimated window means Hermes compresses too late or never.
-3. **Compression is reactive, dedup is proactive.** Hermes only deduplicates identical tool results during context compression (`agent/context_compressor.py`, min 200 chars) — after the prompt has already grown. `tool-slim` deduplicates at hook time (before the result re-enters context), which is earlier and complementary.
+3. **Compression is reactive, dedup is proactive.** Hermes only deduplicates identical tool results during context compression (`agent/context_compressor.py`, min 200 chars) — after the prompt has already grown. `tool-output-compactor` deduplicates at hook time (before the result re-enters context), which is earlier and complementary.
 4. **A long task that re-queries the same tool output repeatedly is the biggest risk.** Repeated `process`/`terminal` results of the same content multiply unchanged; exact-duplicate detection collapses them to a stub.
 
 ## Current Hermes Gap
 
 Local session testing found that `skill_view` was compacted correctly, while a `session_search` result of about 30k characters entered context uncompressed. The plugin was active; the issue was that `session_search` ran through Hermes' inline executor path, not the normal registry path where `model_tools.py` applies `transform_tool_result`.
 
-Minimal fix belongs in Hermes, not in `tool-slim`: route inline tool results through the same transform hook before appending them to the conversation. `tool-slim` should stay boring and only implement the hook contract.
+Minimal fix belongs in Hermes, not in `tool-output-compactor`: route inline tool results through the same transform hook before appending them to the conversation. `tool-output-compactor` should stay boring and only implement the hook contract.
 
-Separately, a long download session overflowed the model window because the endpoint's real limit was not configured in Hermes (see Context Heuristic above). That was a configuration issue, not a `tool-slim` one.
+Separately, a long download session overflowed the model window because the endpoint's real limit was not configured in Hermes (see Context Heuristic above). That was a configuration issue, not a `tool-output-compactor` one.
 
 ## Versioning
 

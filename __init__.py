@@ -12,10 +12,15 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.3.6"
+__version__ = "0.4.0"
 
 
-logger = logging.getLogger("tool-slim")
+PLUGIN_NAME = "tool-output-compactor"
+LEGACY_MARKER = "[tool-slim compacted tool result]"
+COMPACTED_MARKER = f"[{PLUGIN_NAME} compacted tool result]"
+
+
+logger = logging.getLogger(PLUGIN_NAME)
 
 
 IMPORTANT_MARKERS = (
@@ -67,14 +72,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-class ToolSlimPlugin:
+class ToolOutputCompactorPlugin:
     def __init__(self) -> None:
         self._seen: dict[str, dict[str, int]] = {}
         self._seen_call_ids: set[str] = set()
 
     @property
     def name(self) -> str:
-        return "tool-slim"
+        return PLUGIN_NAME
 
     def transform_tool_result(
         self,
@@ -121,7 +126,7 @@ class ToolSlimPlugin:
             return None
         if _env_bool("TOOL_SLIM_DEBUG"):
             print(
-                f"[tool-slim] compacting tool={tool_name or 'unknown'} raw_chars={len(text)} target_chars={max_chars}",
+                f"[{PLUGIN_NAME}] compacting tool={tool_name or 'unknown'} raw_chars={len(text)} target_chars={max_chars}",
                 file=sys.stderr,
             )
         return self._compact(
@@ -157,7 +162,7 @@ class ToolSlimPlugin:
             facts = "Preserved action facts:\n" + "\n".join(fact_lines) + "\n" if fact_lines else f"tool: {tool_name}\n"
             if os.environ.get("TOOL_SLIM_DEDUP_MODE", "stub").lower() == "minimal":
                 stub = (
-                    "[tool-slim duplicate omitted]\n"
+                    f"[{PLUGIN_NAME} duplicate omitted]\n"
                     "mode: dedup\n"
                     f"{facts}"
                     f"raw_chars: {len(text)}\n"
@@ -167,14 +172,14 @@ class ToolSlimPlugin:
                 self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
                 return stub
             stub = (
-                "[tool-slim compacted tool result]\n"
+                f"{COMPACTED_MARKER}\n"
                 "mode: dedup\n"
                 "decision_reason: duplicate tool result\n"
                 f"{facts}"
                 f"raw_chars: {len(text)}\n"
                 f"saved_chars_estimate: {len(text)}\n"
                 "reduction_pct_estimate: 100.0\n"
-                f"notice: tool-slim replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
+                f"notice: {PLUGIN_NAME} replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
                 f"note: this exact output has been returned {count + 1} times this session; see the first occurrence above.\n"
             )
             self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
@@ -196,7 +201,7 @@ class ToolSlimPlugin:
         event = "background_process_already_running" if parsed.get("reused_existing") else "background_process_started"
 
         lines = [
-            "[tool-slim normalized background process start]",
+            f"[{PLUGIN_NAME} normalized background process start]",
             f"event: {event}",
             f"tool: {tool_name}",
         ]
@@ -260,7 +265,7 @@ class ToolSlimPlugin:
         body = llm_body or deterministic_body
 
         header_lines = [
-            "[tool-slim compacted tool result]",
+            COMPACTED_MARKER,
             f"tool: {tool_name}",
             f"mode: {mode}",
             f"decision_reason: {decision.reason}",
@@ -276,7 +281,7 @@ class ToolSlimPlugin:
         if error_message:
             header_lines.append(f"error_message: {self._one_line(error_message, 500)}")
         if _env_bool("TOOL_SLIM_NOTICE_IN_RESULT"):
-            header_lines.append(f"notice: tool-slim compacted this result using {mode} mode")
+            header_lines.append(f"notice: {PLUGIN_NAME} compacted this result using {mode} mode")
 
         compacted = self._assemble_compacted(text, body, max_chars, header_lines, tool_name=tool_name, mode=mode, reason=decision.reason)
         self._log_compaction(tool_name, len(text), len(compacted), mode, status)
@@ -299,7 +304,7 @@ class ToolSlimPlugin:
 
         def build(saved: int) -> str:
             reduction = round(saved * 100 / max(1, raw_len), 1)
-            banner = f"tool-slim: compacted {tool_name or 'unknown'} · {reduction}% reduction · saved {saved} chars · {mode or 'unknown'}"
+            banner = f"{PLUGIN_NAME}: compacted {tool_name or 'unknown'} · {reduction}% reduction · saved {saved} chars · {mode or 'unknown'}"
             if reason:
                 banner += f" ({reason})"
             lines = [header_lines[0], banner, *header_lines[1:]]
@@ -311,7 +316,7 @@ class ToolSlimPlugin:
             compacted = "\n".join(lines) + "\n\n" + body
             if len(compacted) <= max_chars:
                 return compacted
-            return compacted[: max_chars - 80] + "\n\n[tool-slim: compacted output truncated to budget]"
+            return compacted[: max_chars - 80] + f"\n\n[{PLUGIN_NAME}: compacted output truncated to budget]"
 
         first = build(max(0, raw_len - len(body)))
         final_saved = max(0, raw_len - len(first))
@@ -403,7 +408,7 @@ class ToolSlimPlugin:
         )
         logger.info(message)
         if _env_bool("TOOL_SLIM_DEBUG"):
-            print(f"[tool-slim] {message}", file=sys.stderr)
+            print(f"[{PLUGIN_NAME}] {message}", file=sys.stderr)
 
     def _audit_decision(self, tool_name: str, action: str, reason: str, raw_chars: int, status: str) -> None:
         if not _env_bool("TOOL_SLIM_AUDIT"):
@@ -414,7 +419,7 @@ class ToolSlimPlugin:
         )
         logger.info(message)
         if _env_bool("TOOL_SLIM_DEBUG"):
-            print(f"[tool-slim] {message}", file=sys.stderr)
+            print(f"[{PLUGIN_NAME}] {message}", file=sys.stderr)
 
     def _compact_with_llm(
         self,
@@ -437,7 +442,7 @@ class ToolSlimPlugin:
             summary = self._call_llm(base_url, model, prompt)
         except Exception as exc:
             if _env_bool("TOOL_SLIM_DEBUG"):
-                print(f"[tool-slim] llm_compaction_failed error={type(exc).__name__}", file=sys.stderr)
+                print(f"[{PLUGIN_NAME}] llm_compaction_failed error={type(exc).__name__}", file=sys.stderr)
             return None
 
         summary = summary.strip()
@@ -638,7 +643,7 @@ class ToolSlimPlugin:
         content = msg.get("content", "")
         if not isinstance(content, str):
             return False
-        if content.lstrip().startswith("[tool-slim compacted tool result]"):
+        if content.lstrip().startswith((COMPACTED_MARKER, LEGACY_MARKER)):
             return False
         low = content.lower()
         if "traceback" in low or "exception" in low:
@@ -800,8 +805,11 @@ class ToolSlimPlugin:
 
 
 def register(ctx: Any) -> None:
-    plugin = ToolSlimPlugin()
+    plugin = ToolOutputCompactorPlugin()
     ctx.register_hook("transform_tool_result", plugin.transform_tool_result)
+
+
+ToolSlimPlugin = ToolOutputCompactorPlugin
 
 
 def _demo() -> None:
@@ -813,7 +821,7 @@ def _demo() -> None:
     for name in saved_env:
         os.environ.pop(name, None)
 
-    plugin = ToolSlimPlugin()
+    plugin = ToolOutputCompactorPlugin()
     small = "ok"
     assert plugin.transform_tool_result(tool_name="terminal", result=small) is None
 
@@ -856,7 +864,7 @@ def _demo() -> None:
     other_tool = plugin.transform_tool_result(tool_name="terminal", result=dup_body, session_id="sessA")
     assert other_tool is not None and "mode: dedup" not in other_tool
 
-    dedup_read = ToolSlimPlugin()
+    dedup_read = ToolOutputCompactorPlugin()
     read_body = {"content": "row\n" * 2000, "total_lines": 2000, "file_size": 8000, "truncated": False}
     first_read = dedup_read.transform_tool_result(tool_name="read_file", args={"path": "/tmp/listing.txt"}, result=read_body, session_id="sessRead", status="ok")
     second_read = dedup_read.transform_tool_result(tool_name="read_file", args={"path": "/tmp/listing.txt"}, result=read_body, session_id="sessRead", status="ok")
@@ -868,7 +876,7 @@ def _demo() -> None:
     assert "raw_chars:" in second_read
     assert "saved_chars_estimate:" in second_read
 
-    call_plugin = ToolSlimPlugin()
+    call_plugin = ToolOutputCompactorPlugin()
     first_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call1")
     second_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call1")
     third_call = call_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessCall", tool_call_id="call2")
@@ -877,7 +885,7 @@ def _demo() -> None:
     assert third_call is not None and "mode: dedup" in third_call
 
     os.environ["TOOL_SLIM_DEDUP_MODE"] = "minimal"
-    min_plugin = ToolSlimPlugin()
+    min_plugin = ToolOutputCompactorPlugin()
     first_min = min_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessMin")
     assert first_min is not None
     second_min = min_plugin.transform_tool_result(tool_name="process", result=dup_body, session_id="sessMin")
@@ -917,8 +925,8 @@ def _demo() -> None:
         status="success",
     )
     assert compact is not None
-    assert "[tool-slim compacted tool result]" in compact
-    assert "tool-slim: compacted terminal" in compact
+    assert COMPACTED_MARKER in compact
+    assert f"{PLUGIN_NAME}: compacted terminal" in compact
     assert "reduction" in compact
     assert "status: success" in compact
     assert "duration_ms: 12" in compact
@@ -930,7 +938,7 @@ def _demo() -> None:
     os.environ["TOOL_SLIM_NOTICE_IN_RESULT"] = "true"
     compact_notice = plugin.transform_tool_result(tool_name="terminal", result=large)
     assert compact_notice is not None
-    assert "notice: tool-slim compacted this result" in compact_notice
+    assert f"notice: {PLUGIN_NAME} compacted this result" in compact_notice
     os.environ.pop("TOOL_SLIM_NOTICE_IN_RESULT", None)
 
     data = {"items": list(range(2000)), "status": "ok"}
@@ -1037,7 +1045,7 @@ def _demo() -> None:
     assert "Traceback" in compact_search_fail
     assert "RuntimeError: boom" in compact_search_fail
 
-    already_compacted = {"id": 99, "role": "tool", "tool_name": "session_search", "content": "[tool-slim compacted tool result]\ntool: session_search\nmode: deterministic\n... error: null ..."}
+    already_compacted = {"id": 99, "role": "tool", "tool_name": "session_search", "content": f"{COMPACTED_MARKER}\ntool: session_search\nmode: deterministic\n... error: null ..."}
     assert not plugin._session_search_has_error(already_compacted)
     error_null = {"id": 98, "role": "tool", "tool_name": "terminal", "content": '{"output": "ok", "exit_code": 0, "error": null}'}
     assert not plugin._session_search_has_error(error_null)
@@ -1066,4 +1074,4 @@ def _demo() -> None:
 
 if __name__ == "__main__":
     _demo()
-    print("tool-slim self-check ok")
+    print(f"{PLUGIN_NAME} self-check ok")

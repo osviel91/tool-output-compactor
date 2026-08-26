@@ -1,4 +1,4 @@
-# tool-slim Plan
+# tool-output-compactor Plan
 
 ## Phase 1: Confirm Hermes Hook
 
@@ -73,7 +73,7 @@ Possible later flow:
 
 ```txt
 raw tool output
-  -> tool-slim compact result for active context
+  -> tool-output-compactor compact result for active context
   -> optional raw/summary storage in fast-brain/archive
 ```
 

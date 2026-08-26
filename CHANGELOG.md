@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- Rename the Hermes plugin from `tool-slim` to `tool-output-compactor`; existing `TOOL_SLIM_*` environment variables remain unchanged.
+
 ## 0.3.6
 
 - Preserve action facts and status in duplicate-result stubs so deduped outputs keep enough metadata to continue the task.

@@ -13,17 +13,17 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
-HEADER = "[tool-slim compacted tool result]"
+HEADER = "[tool-output-compactor compacted tool result]"
 
 
 def _load_plugin():
-    spec = importlib.util.spec_from_file_location("tool_slim_plugin", ROOT / "__init__.py")
+    spec = importlib.util.spec_from_file_location("tool_output_compactor_plugin", ROOT / "__init__.py")
     if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load tool-slim plugin")
+        raise RuntimeError("cannot load tool-output-compactor plugin")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.ToolSlimPlugin()
+    return module.ToolOutputCompactorPlugin()
 
 
 def _case_small() -> dict[str, Any]:
@@ -265,7 +265,7 @@ def print_report(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Benchmark and diagnose tool-slim compaction.")
+    parser = argparse.ArgumentParser(description="Benchmark and diagnose tool-output-compactor compaction.")
     parser.add_argument("--max-chars", type=int, default=4000)
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--session-id", help="Analyze a real Hermes session instead of synthetic fixtures.")

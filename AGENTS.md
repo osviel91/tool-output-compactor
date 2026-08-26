@@ -2,7 +2,7 @@
 
 ## Handoff
 
-This folder is a seed for a new standalone Hermes plugin named `tool-slim`.
+This folder is a standalone Hermes plugin named `tool-output-compactor`.
 
 The user wants to optimize small-context Hermes agents. The main pain is not persistent memory; it is active context growth from large tool outputs. Hermes recently added a `transform_tool_result` hook. This plugin should use that hook to compact tool results before they are sent back to the model.
 
@@ -13,7 +13,7 @@ This folder currently lives inside the `fast-brain` repo only for convenience. I
 Keep responsibilities separate:
 
 - `fast-brain`: memory, retrieval, consolidation, context recommendation.
-- `tool-slim`: runtime tool-result compaction.
+- `tool-output-compactor`: runtime tool-result compaction.
 
 Do not add fast-brain API calls in V1.
 
@@ -59,7 +59,7 @@ Adapt it once the real contract is known.
 - Skip compaction when the potential saving is too small to justify overhead (`TOOL_SLIM_MIN_SAVING_CHARS`).
 - Replace exact duplicate tool results with a stub before they re-enter context (`TOOL_SLIM_DEDUP`).
 - Always say compaction happened and how much was omitted.
-- Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate`, `reduction_pct_estimate` and a one-line banner (`tool-slim: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`).
+- Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate`, `reduction_pct_estimate` and a one-line banner (`tool-output-compactor: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`).
 - Prefer one boring file over abstractions.
 
 ## Local Hermes Test Context
@@ -70,7 +70,7 @@ Useful local Hermes locations:
 
 - Hermes root: `~/.hermes/`
 - Active config: `~/.hermes/config.yaml`
-- Plugin install target: `~/.hermes/plugins/tool-slim/`
+- Plugin install target: `~/.hermes/plugins/tool-output-compactor/`
 - Environment overrides and secrets: `~/.hermes/.env` (do not print API keys)
 - Main runtime log: `~/.hermes/logs/agent.log`
 - Error log: `~/.hermes/logs/errors.log`
@@ -82,13 +82,13 @@ The installed Hermes config should include:
 ```yaml
 plugins:
   enabled:
-    - tool-slim
+    - tool-output-compactor
 ```
 
-To inspect whether a session used `tool-slim`, search `~/.hermes/logs/agent.log` for the session id and nearby lines like:
+To inspect whether a session used `tool-output-compactor`, search `~/.hermes/logs/agent.log` for the session id and nearby lines like:
 
 ```text
-tool-slim: compacted tool=... raw_chars=... output_chars=... mode=... status=...
+tool-output-compactor: compacted tool=... raw_chars=... output_chars=... mode=... status=...
 ```
 
 Compacted tool messages should also contain header KPIs visible to Hermes in-context:
@@ -103,14 +103,14 @@ To inspect persisted compacted results for a session, query `~/.hermes/state.db`
 
 ```bash
 sqlite3 ~/.hermes/state.db "SELECT id, role, tool_name, length(content), substr(replace(content, char(10), ' '), 1, 240) FROM messages WHERE session_id='SESSION_ID' ORDER BY id;"
-sqlite3 ~/.hermes/state.db "SELECT id, tool_name, content FROM messages WHERE session_id='SESSION_ID' AND content LIKE '%[tool-slim compacted tool result]%' ORDER BY id;"
+sqlite3 ~/.hermes/state.db "SELECT id, tool_name, content FROM messages WHERE session_id='SESSION_ID' AND content LIKE '%[tool-output-compactor compacted tool result]%' ORDER BY id;"
 ```
 
 Recent real session used for tuning: `20260823_143121_22e2e7`.
 
 Findings from that session:
 
-- `tool-slim` saved a lot of context, but LLM compaction was too aggressive for structured listings.
+- `tool-output-compactor` saved a lot of context, but LLM compaction was too aggressive for structured listings.
 - Future improvements should focus on the decision pipeline: when to use deterministic, hybrid or LLM compaction.
 - Structured `read_file` results, file listings, command outputs with rows, and failures should stay deterministic.
 - LLM should only summarize long unstructured text/log noise, with deterministic sections preserved first.
@@ -126,7 +126,7 @@ When diagnosing "session ended without finishing" or "context overflow":
 3. Pin them in `~/.hermes/config.yaml`:
    - `model.context_length` for the active model.
    - `custom_providers[].models.<id>.context_length` for each model of a custom provider (single source of truth for startup, `/model`, `/info`).
-4. Remember: Hermes deduplicates identical tool results only during compression (reactively, `agent/context_compressor.py`, min 200 chars). `tool-slim` deduplicates at hook time (proactively, before the result re-enters context) via `TOOL_SLIM_DEDUP`.
+4. Remember: Hermes deduplicates identical tool results only during compression (reactively, `agent/context_compressor.py`, min 200 chars). `tool-output-compactor` deduplicates at hook time (proactively, before the result re-enters context) via `TOOL_SLIM_DEDUP`.
 
 Local omlx model windows (verified against `/v1/models`): `main`=65536, `advanced-vision`=65536, `assistive`/`reasoning`/`fast`/`operator`=131072, `compressor`/`embedding`/`whisper`=32768.
 
@@ -143,7 +143,7 @@ It is NOT responsible for:
 - Directing the agent. The dedup stub is informational only — `note: this exact output has been returned N times this session` — never a directive like "do not relaunch". Behavior decisions belong to the agent and Hermes.
 - Fixing prompt design. A prompt that requires immediate confirmation of a long-running result (e.g. "only answer when track 022 shows SUCCESS") pushes the agent into relaunch loops; that is a verification-design problem, not a plugin problem.
 
-Future-feature test: "does this preserve or surface information for the model?" If it steers behavior or manages tasks, it does not belong in `tool-slim`.
+Future-feature test: "does this preserve or surface information for the model?" If it steers behavior or manages tasks, it does not belong in `tool-output-compactor`.
 
 ### Lessons From Real Sessions
 
@@ -154,9 +154,9 @@ Future-feature test: "does this preserve or surface information for the model?" 
 ## Test Command
 
 ```bash
-python3 -m compileall tool-slim
-python3 tool-slim/__init__.py
-python3 tool-slim/benchmark.py
+python3 -m compileall tool-output-compactor
+python3 tool-output-compactor/__init__.py
+python3 tool-output-compactor/benchmark.py
 ```
 
 The second command runs minimal self-checks.
