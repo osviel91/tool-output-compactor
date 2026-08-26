@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.6
+
+- Preserve action facts and status in duplicate-result stubs so deduped outputs keep enough metadata to continue the task.
+
 ## 0.3.5
 
 - Replace directive `action_hint`s in duplicate-result stubs with a single informational `note` (output seen N times; see first occurrence). `tool-slim` surfaces the pattern but does not tell the agent what to do — behavior decisions stay with the agent and Hermes guardrails.
