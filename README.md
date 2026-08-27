@@ -101,6 +101,7 @@ By default, compaction is deterministic and dependency-free:
 - The compacted result always says compaction happened and reports omitted size.
 - The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
 - Terminal background-start results are normalized into a short factual record (`event`, `session_id`, `pid`, `command`, `notify_on_complete`) so agents can see the process handle clearly without receiving behavior directives.
+- Repeated terminal background starts with the same Hermes session, cwd/workdir and command are surfaced as `event: repeated_background_process_start` while keeping current and previous process ids visible.
 
 Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-output-compactor` falls back to deterministic compaction.
 
@@ -274,6 +275,9 @@ TOOL_SLIM_DEDUP_MIN_CHARS=4000
 
 # How many unique results to remember per session for duplicate detection.
 TOOL_SLIM_DEDUP_WINDOW=100
+
+# How many background-start command fingerprints to remember for repeat detection.
+TOOL_SLIM_BACKGROUND_WINDOW=50
 
 # How many last assistant messages to preserve in a session_search result.
 # Raise for "repeat the same process" tasks where the workflow steps matter.

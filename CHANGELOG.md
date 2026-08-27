@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Keep structured tools (`read_file`, `glob`, `grep`, `session_search`) deterministic even when LLM compaction is enabled.
+- Surface repeated terminal background starts by command/cwd while preserving dynamic process ids as facts.
+- Preserve coding-assistant code/diff sections before compacting surrounding output.
+
 ## 0.4.0
 
 - Rename the Hermes plugin from `tool-slim` to `tool-output-compactor`; existing `TOOL_SLIM_*` environment variables remain unchanged.
