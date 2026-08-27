@@ -60,6 +60,8 @@ CODING_TOOL_NAMES = {
     "cursor",
 }
 
+STRUCTURED_TOOL_NAMES = {"read_file", "glob", "grep", "session_search"}
+
 
 @dataclass(frozen=True)
 class CompactionDecision:
@@ -85,6 +87,7 @@ class ToolOutputCompactorPlugin:
     def __init__(self) -> None:
         self._seen: dict[str, dict[str, int]] = {}
         self._seen_call_ids: set[str] = set()
+        self._background_starts: dict[str, dict[str, Any]] = {}
 
     @property
     def name(self) -> str:
@@ -115,7 +118,7 @@ class ToolOutputCompactorPlugin:
                 return None
             self._seen_call_ids.add(call_key)
 
-        background_start = self._background_start_summary(tool_name or "unknown", args, text)
+        background_start = self._background_start_summary(tool_name or "unknown", args, text, session_id)
         if background_start is not None:
             self._audit_decision(tool_name or "unknown", "normalized", "background process start", len(text), status)
             return background_start
@@ -198,7 +201,7 @@ class ToolOutputCompactorPlugin:
             bucket.pop(next(iter(bucket)))
         return None
 
-    def _background_start_summary(self, tool_name: str, args: Any, text: str) -> str | None:
+    def _background_start_summary(self, tool_name: str, args: Any, text: str, hermes_session_id: str = "") -> str | None:
         if tool_name != "terminal":
             return None
         parsed = self._try_json(text)
@@ -208,21 +211,48 @@ class ToolOutputCompactorPlugin:
         if output not in {"Background process started", "Background process already running"}:
             return None
         event = "background_process_already_running" if parsed.get("reused_existing") else "background_process_started"
+        command = self._arg_value(args, "command")
+        cwd = self._arg_value(args, "cwd") or self._arg_value(args, "workdir")
+        repeat = self._record_background_start(hermes_session_id, command, cwd, parsed)
+        if repeat and not parsed.get("reused_existing"):
+            event = "repeated_background_process_start"
 
         lines = [
             f"[{PLUGIN_NAME} normalized background process start]",
             f"event: {event}",
             f"tool: {tool_name}",
         ]
-        command = self._arg_value(args, "command")
+        if repeat and not parsed.get("reused_existing"):
+            lines.append(f"repeat_count: {repeat['count']}")
+            lines.append(f"previous_session_id: {repeat.get('session_id', '')}")
+            lines.append(f"previous_pid: {repeat.get('pid', '')}")
+            lines.append(f"current_session_id: {parsed.get('session_id', '')}")
+            lines.append(f"current_pid: {parsed.get('pid', '')}")
         for key in ("session_id", "pid", "exit_code", "notify_on_complete", "reused_existing"):
             if key in parsed:
                 lines.append(f"{key}: {parsed[key]}")
+        if cwd:
+            lines.append(f"cwd: {self._one_line(cwd, 1000)}")
         if command:
             lines.append(f"command: {self._one_line(command, 1000)}")
         if parsed.get("error"):
             lines.append(f"error: {self._one_line(parsed['error'], 500)}")
         return "\n".join(lines) + "\n"
+
+    def _record_background_start(self, hermes_session_id: str, command: str, cwd: str, parsed: dict[str, Any]) -> dict[str, Any] | None:
+        if not command:
+            return None
+        key = "\0".join((hermes_session_id or "", cwd or "", command))
+        previous = self._background_starts.get(key)
+        current = {"session_id": parsed.get("session_id", ""), "pid": parsed.get("pid", ""), "count": 1}
+        if previous:
+            current["count"] = int(previous.get("count", 1)) + 1
+            self._background_starts[key] = current
+            return {**previous, "count": current["count"]}
+        self._background_starts[key] = current
+        if len(self._background_starts) > _env_int("TOOL_SLIM_BACKGROUND_WINDOW", 50):
+            self._background_starts.pop(next(iter(self._background_starts)))
+        return None
 
     def _arg_value(self, args: Any, key: str) -> str:
         if isinstance(args, dict):
@@ -391,7 +421,7 @@ class ToolOutputCompactorPlugin:
             return CompactionDecision("deterministic", "structured content field")
         if isinstance(parsed, dict) and isinstance(parsed.get("output"), str) and self._looks_structured(parsed["output"]):
             return CompactionDecision("deterministic", "structured output field")
-        if tool_name in {"read_file", "glob", "grep", "session_search"}:
+        if tool_name in STRUCTURED_TOOL_NAMES:
             return CompactionDecision("deterministic", f"structured tool {tool_name}")
         return None
 
@@ -975,6 +1005,28 @@ def _demo() -> None:
     assert "background_process_already_running" in bg_reused_summary
     assert "reused_existing: True" in bg_reused_summary
 
+    bg_repeat_plugin = ToolOutputCompactorPlugin()
+    bg_first = '{"output": "Background process started", "session_id": "proc_one", "pid": 111, "exit_code": 0}'
+    bg_second = '{"output": "Background process started", "session_id": "proc_two", "pid": 222, "exit_code": 0}'
+    assert bg_repeat_plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "python3 worker.py", "cwd": "/repo"},
+        result=bg_first,
+        session_id="sessBg",
+    ) is not None
+    bg_repeat = bg_repeat_plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "python3 worker.py", "cwd": "/repo"},
+        result=bg_second,
+        session_id="sessBg",
+    )
+    assert bg_repeat is not None
+    assert "event: repeated_background_process_start" in bg_repeat
+    assert "repeat_count: 2" in bg_repeat
+    assert "previous_session_id: proc_one" in bg_repeat
+    assert "current_session_id: proc_two" in bg_repeat
+    assert "DO NOT" not in bg_repeat
+
     barely_over = "x" * (_env_int("TOOL_SLIM_MAX_CHARS", 4000) + 100)
     assert plugin.transform_tool_result(tool_name="terminal", result=barely_over) is None
 
@@ -1115,6 +1167,36 @@ def _demo() -> None:
     assert "01 - Artist - Track 1 - long sortable library row.mp3" in compact_read
     assert "120 - Artist - Track 120 - long sortable library row.mp3" in compact_read
     assert "bad summary" not in compact_read
+
+    structured_llm_plugin = ToolOutputCompactorPlugin()
+    structured_llm_plugin._call_llm = lambda *_: "bad summary"  # type: ignore[method-assign]
+    glob_result = [f"/repo/src/file_{i}.py" for i in range(300)]
+    compact_glob = structured_llm_plugin.transform_tool_result(tool_name="glob", args={"path": "/repo"}, result=glob_result)
+    assert compact_glob is not None
+    assert "mode: deterministic" in compact_glob
+    assert "decision_reason: structured tool glob" in compact_glob
+    assert "bad summary" not in compact_glob
+
+    grep_result = "\n".join(f"/repo/src/file_{i}.py:{i}:match text" for i in range(300))
+    compact_grep = structured_llm_plugin.transform_tool_result(tool_name="grep", args={"query": "match"}, result=grep_result)
+    assert compact_grep is not None
+    assert "mode: deterministic" in compact_grep
+    assert "decision_reason: structured tool grep" in compact_grep
+    assert "bad summary" not in compact_grep
+
+    compact_structured_search = structured_llm_plugin.transform_tool_result(
+        tool_name="session_search",
+        result={
+            "session_id": "sess_structured",
+            "message_count": 220,
+            "truncated": True,
+            "messages": [{"role": "tool", "tool_name": "terminal", "content": f"progress {i} /repo/file_{i}.py"} for i in range(220)],
+        },
+    )
+    assert compact_structured_search is not None
+    assert "mode: deterministic" in compact_structured_search
+    assert "decision_reason: structured tool session_search" in compact_structured_search
+    assert "bad summary" not in compact_structured_search
 
     os.environ["TOOL_SLIM_LLM_ENABLED"] = "true"
     os.environ["TOOL_SLIM_LLM_BASE_URL"] = "http://unused.test/v1"
