@@ -96,6 +96,7 @@ By default, compaction is deterministic and dependency-free:
 - Large plain text keeps important lines, head and tail.
 - Large JSON keeps shape, keys and bounded item previews.
 - Errors, warnings, tracebacks, stderr and exit codes are prioritized, including inside JSON string fields like terminal `output`.
+- Coding-assistant outputs and code/diff signals stay deterministic: `opencode` commands, fenced code blocks, unified diffs, JSON patch parts and `diff`/`patch` fields are preserved before prose is compacted.
 - Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
 - The compacted result always says compaction happened and reports omitted size.
 - The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
@@ -109,6 +110,7 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 - Paths, queries and command strings when present in args.
 - Status, approvals, exit codes, stderr and error fields from structured results.
 - Lines containing error markers: `error`, `exception`, `traceback`, `failed`, `failure`, `warning`, `warn`, `denied`, `unauthorized`, `forbidden`, `timeout`, `exit_code`, `stderr`.
+- Literal code/diff sections from coding assistants, including Markdown fences, `diff --git` blocks, unified hunks and OpenCode JSON patch parts when available.
 - Head and tail of structured text, listings and file-like outputs.
 - JSON shape and bounded previews for large objects/arrays.
 
@@ -119,6 +121,10 @@ Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/compl
 - It does not use embeddings.
 - It does not compact results below `TOOL_SLIM_MAX_CHARS`.
 - It does not guarantee coverage for Hermes tools that bypass `transform_tool_result`.
+
+### OpenCode And Coding Assistants
+
+OpenCode's normal formatted CLI output is Markdown-style text; its public docs do not define special code-fragment markers beyond ordinary code fences and diffs. When possible, call `opencode run --format json` or the OpenCode SDK/server so patch parts and diffs arrive as structured data. If output arrives as plain text, `tool-output-compactor` falls back to conservative code/diff detection and preserves those sections literally before summarizing surrounding prose.
 
 ## Non-Goals
 

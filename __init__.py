@@ -51,6 +51,15 @@ CRITICAL_KEYS = {
     "command",
 }
 
+CODING_TOOL_NAMES = {
+    "opencode",
+    "codex",
+    "claude",
+    "aider",
+    "gemini",
+    "cursor",
+}
+
 
 @dataclass(frozen=True)
 class CompactionDecision:
@@ -257,6 +266,10 @@ class ToolOutputCompactorPlugin:
         if preserved:
             deterministic_body = preserved + "\n\n---\n\n" + deterministic_body
 
+        code_sections = self._preserved_code_diff_sections(tool_name, args, parsed, text, max_chars)
+        if code_sections:
+            deterministic_body = code_sections + "\n\n---\n\n" + deterministic_body
+
         decision = self._choose_compaction_mode(tool_name, args, parsed, text, status, error_type, error_message)
         llm_body = None
         if decision.mode == "llm":
@@ -335,6 +348,7 @@ class ToolOutputCompactorPlugin:
         checks = (
             self._decision_session_search,
             self._decision_failures,
+            self._decision_coding_assistant_output,
             self._decision_structured_tool_result,
             self._decision_structured_text,
             self._decision_too_small_for_llm,
@@ -365,6 +379,11 @@ class ToolOutputCompactorPlugin:
         important = self._important_from_value(parsed, 1) if parsed is not None else self._important_lines(text, 1)
         if important:
             return CompactionDecision("deterministic", "critical lines present")
+        return None
+
+    def _decision_coding_assistant_output(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
+        if self._is_coding_assistant_output(tool_name, args, parsed, text):
+            return CompactionDecision("deterministic", "coding assistant output")
         return None
 
     def _decision_structured_tool_result(self, tool_name: str, args: Any, parsed: Any, text: str, status: str, error_type: str, error_message: str) -> CompactionDecision | None:
@@ -710,6 +729,119 @@ class ToolOutputCompactorPlugin:
         numbered = sum(1 for line in lines if line[:1].isdigit() or line.startswith(("- ", "* ", "|")))
         file_like = sum(1 for line in lines if any(line.lower().endswith(ext) for ext in (".py", ".js", ".ts", ".json", ".yaml", ".yml", ".txt", ".md", ".mp3", ".mp4", ".log")))
         return short / len(lines) >= 0.75 and (paths + numbered + file_like) >= 3
+
+    def _is_coding_assistant_output(self, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        name = tool_name.lower()
+        if any(token in name for token in CODING_TOOL_NAMES):
+            return True
+        if isinstance(args, dict):
+            command = self._to_text(args.get("command") or args.get("cmd") or "").strip().lower()
+            executable = os.path.basename(command.split()[0]) if command.split() else ""
+            if executable in CODING_TOOL_NAMES:
+                return True
+        return self._has_code_diff_signal(text) or self._value_has_code_artifact(parsed)
+
+    def _has_code_diff_signal(self, text: str) -> bool:
+        if "```" in text or "diff --git" in text:
+            return True
+        return bool(re.search(r"(?m)^@@ |^\+\+\+ [ab]/|^--- [ab]/|^Index: |^new file mode |^deleted file mode ", text))
+
+    def _value_has_code_artifact(self, value: Any, depth: int = 0) -> bool:
+        if depth > 8:
+            return False
+        if isinstance(value, dict):
+            if value.get("type") == "patch" or "diff" in value or "patch" in value:
+                return True
+            return any(self._value_has_code_artifact(child, depth + 1) for child in value.values())
+        if isinstance(value, list):
+            return any(self._value_has_code_artifact(child, depth + 1) for child in value)
+        return isinstance(value, str) and self._has_code_diff_signal(value)
+
+    def _preserved_code_diff_sections(self, tool_name: str, args: Any, parsed: Any, text: str, max_chars: int) -> str:
+        if not self._is_coding_assistant_output(tool_name, args, parsed, text):
+            return ""
+        budget = _env_int("TOOL_SLIM_CODE_MAX_CHARS", max(1200, max_chars // 2))
+        snippets = self._code_diff_snippets(text)
+        if parsed is not None:
+            snippets += self._code_diff_snippets_from_value(parsed)
+
+        kept: list[str] = []
+        seen: set[str] = set()
+        used = 0
+        omitted = 0
+        truncated = False
+        for snippet in snippets:
+            snippet = snippet.strip()
+            key = snippet[:500]
+            if not snippet or key in seen:
+                continue
+            seen.add(key)
+            if used + len(snippet) + 2 <= budget:
+                kept.append(snippet)
+                used += len(snippet) + 2
+                continue
+            remaining = budget - used - 80
+            if remaining > 200:
+                kept.append(snippet[:remaining] + "\n[code/diff snippet truncated]")
+                used = budget
+                truncated = True
+            else:
+                omitted += 1
+            omitted += len(snippets) - len(seen)
+            break
+
+        if not kept:
+            return ""
+        lines = ["Preserved code/diff sections:"]
+        lines.extend(kept)
+        if omitted:
+            lines.append(f"code_diff_sections_omitted: {omitted}")
+        if truncated:
+            lines.append("code_diff_truncated: true")
+        return "\n\n".join(lines)
+
+    def _code_diff_snippets_from_value(self, value: Any, depth: int = 0) -> list[str]:
+        if depth > 8:
+            return []
+        if isinstance(value, dict):
+            snippets: list[str] = []
+            if value.get("type") == "patch" and value.get("files"):
+                snippets.append("patch files: " + self._one_line(self._to_text(value.get("files")), 1000))
+            for key, child in value.items():
+                if key in {"diff", "output", "content", "text"} and isinstance(child, str):
+                    snippets.extend(self._code_diff_snippets(child))
+                elif key == "patch":
+                    snippets.append(self._one_line(self._to_text(child), 2000))
+                snippets.extend(self._code_diff_snippets_from_value(child, depth + 1))
+            return snippets
+        if isinstance(value, list):
+            snippets = []
+            for child in value:
+                snippets.extend(self._code_diff_snippets_from_value(child, depth + 1))
+            return snippets
+        if isinstance(value, str):
+            return self._code_diff_snippets(value)
+        return []
+
+    def _code_diff_snippets(self, text: str) -> list[str]:
+        snippets = [match.group(0) for match in re.finditer(r"```[\s\S]*?```", text)]
+        lines = text.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("diff --git") or line.startswith("Index: "):
+                start = i
+                i += 1
+                while i < len(lines) and not lines[i].startswith(("diff --git", "Index: ")):
+                    i += 1
+                snippets.append("\n".join(lines[start:i]))
+                continue
+            if line.startswith("@@ "):
+                start = max(0, i - 2)
+                end = min(len(lines), i + 60)
+                snippets.append("\n".join(lines[start:end]))
+            i += 1
+        return snippets
 
     def _important_lines(self, text: str, limit: int) -> list[str]:
         lines = []

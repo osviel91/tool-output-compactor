@@ -101,8 +101,36 @@ def _case_session_search() -> dict[str, Any]:
     }
 
 
+def _case_opencode_patch() -> dict[str, Any]:
+    patch = """diff --git a/src/app.py b/src/app.py
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,3 +1,6 @@
+ def greet(name):
+-    return "hi " + name
++    if not name:
++        raise ValueError("name required")
++    return f"hi {name}"
+"""
+    result = {
+        "type": "message.part.updated",
+        "properties": {
+            "part": {"type": "patch", "files": ["src/app.py"]},
+            "delta": "analysis noise\n" * 250 + patch + "tail noise\n" * 250,
+        },
+    }
+    return {
+        "name": "opencode patch output",
+        "tool": "terminal",
+        "args": {"command": "opencode run --format json add validation"},
+        "result": result,
+        "required": ["opencode run --format json", "diff --git", "@@", "src/app.py", "ValueError(\"name required\")"],
+        "should_compact": True,
+    }
+
+
 def synthetic_cases() -> list[dict[str, Any]]:
-    return [_case_small(), _case_terminal_failure(), _case_read_listing(), _case_session_search()]
+    return [_case_small(), _case_terminal_failure(), _case_read_listing(), _case_session_search(), _case_opencode_patch()]
 
 
 def _mode(output: str | None) -> str:
