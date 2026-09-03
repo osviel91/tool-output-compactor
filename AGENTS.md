@@ -8,22 +8,24 @@ The user wants to optimize small-context Hermes agents. The main pain is not per
 
 ## Current Repository Context
 
-This folder currently lives inside the `fast-brain` repo only for convenience. It should be extracted into a separate project later.
+This folder is an independent git repository (`github.com/osviel91/tool-output-compactor`), standalone from any other project. `fast-brain` is a separate, independent project and is not related to this repo.
 
 Keep responsibilities separate:
 
-- `fast-brain`: memory, retrieval, consolidation, context recommendation.
-- `tool-output-compactor`: runtime tool-result compaction.
+- Hermes: context lifecycle, window management, hard tool-output limits, historical pruning, compression, loop guardrails.
+- `tool-output-compactor`: type-aware, information-preserving compaction of tool results before they re-enter model context.
+- (external) `hermes-progress-guard`: behavioral stagnation / progress detection.
 
-Do not add fast-brain API calls in V1.
+Do not add fast-brain API calls in V1. Do not duplicate Hermes-native context management.
 
 ## What Exists
 
 - `plugin.yaml`: declares the intended Hermes hook.
-- `__init__.py`: dependency-free base plugin with deterministic, hybrid and optional LLM-assisted compaction.
+- `__init__.py`: dependency-free base plugin with deterministic, hybrid and optional LLM-assisted compaction, plus a typed extractor registry (`PytestExtractor`, `GitStatusExtractor`, `GitLogExtractor`, ...) with generic structured/text fallbacks.
 - `benchmark.py`: dependency-free synthetic benchmark plus real Hermes session diagnostics.
 - `README.md`: user-facing overview and install sketch.
 - `PLAN.md`: implementation roadmap.
+- `REDIRECTION_PLAN.md`: audit-first plan redirecting the plugin toward type-aware, information-preserving extraction (Phase 1 + 2 done).
 - `AGENTS.md`: this handoff.
 
 ## Hermes Hook Contract
@@ -153,14 +155,24 @@ Future-feature test: "does this preserve or surface information for the model?" 
 
 ## Test Command
 
+Run from this repo root:
+
 ```bash
-python3 -m compileall tool-output-compactor
-python3 tool-output-compactor/__init__.py
-python3 tool-output-compactor/benchmark.py
+python3 -m compileall __init__.py benchmark.py coexistence_test.py
+python3 __init__.py
+python3 benchmark.py
+python3 coexistence_test.py
 ```
 
-The second command runs minimal self-checks.
-The benchmark should pass `4/4` synthetic cases with `critical_marker_failures=0` and `over_budget=0` before tuning defaults.
+`python3 __init__.py` runs the minimal self-checks.
+The benchmark should pass its synthetic cases with `critical_marker_failures=0` and `over_budget=0` before tuning defaults.
+`coexistence_test.py` is self-contained: it proves the coexistence contract
+(compaction never hides raw-result change from hermes-progress-guard; guard
+recovery preempts compaction; first-string-wins ordering) against a local stub
+guard and always runs 6/6 with no external checkout. Run
+`COEXISTENCE_REAL=1 python3 coexistence_test.py` to additionally validate the
+same scenarios against the real hermes-progress-guard source
+(override its location with `PROGRESS_GUARD_PLUGIN_DIR`).
 
 ## Next Agent First Task
 

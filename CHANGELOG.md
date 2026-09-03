@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Introduce a `classify → extract → budget → render` pipeline with a typed extractor registry (`_Extractor` base; `PytestExtractor`, `GitStatusExtractor`, `GitLogExtractor`) ahead of generic structured/text fallbacks. REDIRECTION_PLAN.md phases 1 + 2.
+- Typed extraction stays deterministic: pytest summary + failing tests + error evidence; git status (staged/modified/untracked counts + first paths); git log (oneline/normal summaries).
+- Compacted headers from typed extractors include `result_type:`; decisions are `deterministic` with reasons like `pytest output` / `git status output` / `git log output`.
+- Compaction INFO logs now include `result_type` and `dedup` fields (telemetry).
+- Add `coexistence_test.py`: contract tests proving compaction cannot hide raw-result change from a progress guard and that guard recovery injection wins over compaction on the shared `transform_tool_result` hook. Self-contained by default (local stub guard, 6/6, no external checkout); `COEXISTENCE_REAL=1` additionally validates against a real `hermes-progress-guard` import (hermes-progress-guard evolves independently, so it must never be a hard test dependency).
+- Existing generic paths, `TOOL_SLIM_*` env vars, dedup and LLM fallback unchanged (backward compatible).
+
 ## 0.4.1
 
 - Keep structured tools (`read_file`, `glob`, `grep`, `session_search`) deterministic even when LLM compaction is enabled.

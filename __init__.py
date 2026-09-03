@@ -7,12 +7,12 @@ import os
 import re
 import sys
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 
 PLUGIN_NAME = "tool-output-compactor"
@@ -69,6 +69,136 @@ class CompactionDecision:
     reason: str
 
 
+@dataclass
+class ExtractedResult:
+    """Intermediate, type-aware representation produced by an extractor.
+
+    `body` is the base deterministic model-facing text for this result type.
+    `important` lists critical lines to surface in the preserved sections.
+    `decision` is set by typed extractors (always deterministic); generic
+    extractors leave it None and the decision pipeline chooses afterwards."""
+
+    result_type: str
+    body: str = ""
+    important: list[str] = field(default_factory=list)
+    decision: CompactionDecision | None = None
+
+
+class _Extractor:
+    """Base class for type-aware extractors. Registered instances are tried in
+    order; the first whose match() succeeds produces the base body."""
+
+    kind = "generic"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        raise NotImplementedError
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        raise NotImplementedError
+
+
+def _result_output_text(parsed: Any, text: str) -> str:
+    """Textual payload of a result: unwraps dicts that carry a text field."""
+    if isinstance(parsed, dict):
+        for key in ("output", "content", "stdout", "text"):
+            value = parsed.get(key)
+            if isinstance(value, str):
+                return value
+    return text
+
+
+def _command_hint(args: Any) -> str:
+    if isinstance(args, dict):
+        for key in ("command", "cmd"):
+            value = args.get(key)
+            if isinstance(value, str):
+                return value.lower()
+    return ""
+
+
+def _env_int_or_none(name: str) -> int | None:
+    try:
+        return int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return None
+
+
+_PYTEST_COUNTS_RE = re.compile(
+    r"(?m)^=+\s*(\d+ (?:passed|failed|error|skipped|xfailed|xpassed)"
+    r"(?:, \d+ (?:passed|failed|error|skipped|xfailed|xpassed))* in [\d.]+s)\s*=+\s*$"
+)
+_PYTEST_VERBOSE_RE = re.compile(r"(?m)^.*\.py::[^\s:]+ (?:PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s*$")
+_GIT_PORCELAIN_RE = re.compile(r"(?m)^([ MADRCU?]{1,2}) ([^\n]+)$")
+
+
+def _is_pytest_output(out: str) -> bool:
+    if not out or len(out) < 200:
+        return False
+    if _PYTEST_COUNTS_RE.search(out):
+        return True
+    has_header = "test session starts" in out
+    has_short = "short test summary info" in out
+    has_verbose = _PYTEST_VERBOSE_RE.search(out) is not None
+    return has_header and (has_short or has_verbose)
+
+
+def _pytest_failure_lines(out: str) -> list[str]:
+    seen: list[str] = []
+    for raw in out.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith(("FAILED ", "ERROR ")):
+            if stripped not in seen:
+                seen.append(stripped)
+        elif raw.startswith("FAILED ") or raw.startswith("ERROR "):
+            if stripped not in seen:
+                seen.append(stripped)
+    return seen
+
+
+def _pytest_error_evidence(out: str, limit: int = 12) -> list[str]:
+    lines: list[str] = []
+    in_body = False
+    for raw in out.splitlines():
+        if re.match(r"^_{5,}", raw):
+            in_body = True
+            continue
+        if re.match(r"^=+ ?(?:FAILURES|ERRORS|short test summary info)", raw):
+            continue
+        if in_body:
+            stripped = raw.strip()
+            if stripped.startswith("E "):
+                if stripped not in lines:
+                    lines.append(stripped)
+                    if len(lines) >= limit:
+                        break
+    return lines
+
+
+def _is_porcelain_row(row: str) -> bool:
+    if len(row) < 4 or row[2] != " " or not row[3:].strip():
+        return False
+    if row[0] == " " and row[1] == " ":
+        return False
+    return True
+
+
+def _git_porcelain_lines(out: str) -> list[str]:
+    return [match.group(0) for match in _GIT_PORCELAIN_RE.finditer(out) if _is_porcelain_row(match.group(0))]
+
+
+def _git_status_signal(out: str) -> bool:
+    markers = ("On branch ", "Changes not staged for commit", "Changes to be committed", "Untracked files:", "nothing to commit")
+    if any(marker in out for marker in markers):
+        return True
+    return len(_git_porcelain_lines(out)) >= 5
+
+
+def _git_normal_path(raw: str) -> str:
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^(modified|new file|deleted|renamed|typechange):\s*", "", cleaned)
+    return cleaned.split(" -> ")[-1] if cleaned else ""
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -88,6 +218,14 @@ class ToolOutputCompactorPlugin:
         self._seen: dict[str, dict[str, int]] = {}
         self._seen_call_ids: set[str] = set()
         self._background_starts: dict[str, dict[str, Any]] = {}
+        self._extractors: list[_Extractor] = [
+            PytestExtractor(),
+            GitStatusExtractor(),
+            GitLogExtractor(),
+            SessionSearchExtractor(),
+            JsonExtractor(),
+            TextExtractor(),
+        ]
 
     @property
     def name(self) -> str:
@@ -181,7 +319,8 @@ class ToolOutputCompactorPlugin:
                     f"saved_chars_estimate: {len(text)}\n"
                     "reduction_pct_estimate: 100.0\n"
                 )
-                self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
+                self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status,
+                                     result_type="", deduped=True)
                 return stub
             stub = (
                 f"{COMPACTED_MARKER}\n"
@@ -194,7 +333,8 @@ class ToolOutputCompactorPlugin:
                 f"notice: {PLUGIN_NAME} replaced an exact duplicate of a previous {tool_name} result (seen {count + 1} times); see above\n"
                 f"note: this exact output has been returned {count + 1} times this session; see the first occurrence above.\n"
             )
-            self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status)
+            self._log_compaction(tool_name, len(text), len(stub), "dedup", status=status,
+                                 result_type="", deduped=True)
             return stub
         bucket[key] = 1
         if len(bucket) > _env_int("TOOL_SLIM_DEDUP_WINDOW", 50):
@@ -268,6 +408,19 @@ class ToolOutputCompactorPlugin:
         except TypeError:
             return str(result)
 
+    def _classify_extractor(self, tool_name: str, args: Any, parsed: Any, text: str) -> _Extractor:
+        for extractor in self._extractors:
+            if extractor.match(self, tool_name, args, parsed, text):
+                return extractor
+        return TextExtractor()
+
+    def _extract_result(self, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        extractor = self._classify_extractor(tool_name, args, parsed, text)
+        extracted = extractor.extract(self, tool_name, args, parsed, text)
+        if extracted.decision is None and extractor.kind != "generic":
+            extracted.decision = CompactionDecision("deterministic", f"{extractor.kind} extractor")
+        return extracted
+
     def _compact(
         self,
         tool_name: str,
@@ -281,26 +434,24 @@ class ToolOutputCompactorPlugin:
         error_message: str = "",
     ) -> str:
         parsed = self._try_json(text)
-        if parsed is not None:
-            if tool_name == "session_search":
-                deterministic_body = self._compact_session_search(parsed)
-                important: list[str] = []
-            else:
-                deterministic_body = self._compact_json(parsed)
-                important = self._important_from_value(parsed, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
-        else:
-            deterministic_body = self._compact_text(text)
-            important = self._important_lines(text, _env_int("TOOL_SLIM_IMPORTANT_LINES", 40))
+        # classify -> extract: pick the first matching extractor (typed first,
+        # generic json/text/session-search as fallback) and get the base body.
+        extracted = self._extract_result(tool_name, args, parsed, text)
+        deterministic_body = extracted.body
 
-        preserved = self._preserved_sections(tool_name, args, parsed, important)
+        # decorate with preserved action facts + critical lines
+        preserved = self._preserved_sections(tool_name, args, parsed, extracted.important)
         if preserved:
             deterministic_body = preserved + "\n\n---\n\n" + deterministic_body
 
+        # keep code/diff sections for coding-assistant outputs
         code_sections = self._preserved_code_diff_sections(tool_name, args, parsed, text, max_chars)
         if code_sections:
             deterministic_body = code_sections + "\n\n---\n\n" + deterministic_body
 
-        decision = self._choose_compaction_mode(tool_name, args, parsed, text, status, error_type, error_message)
+        # budget/mode decision: typed extractors are deterministic by design;
+        # generic results go through the decision pipeline (LLM last).
+        decision = extracted.decision or self._choose_compaction_mode(tool_name, args, parsed, text, status, error_type, error_message)
         llm_body = None
         if decision.mode == "llm":
             llm_body = self._compact_with_llm(tool_name, text, deterministic_body, max_chars, preserved)
@@ -310,6 +461,10 @@ class ToolOutputCompactorPlugin:
         header_lines = [
             COMPACTED_MARKER,
             f"tool: {tool_name}",
+        ]
+        if extracted.decision is not None:
+            header_lines.append(f"result_type: {extracted.result_type}")
+        header_lines += [
             f"mode: {mode}",
             f"decision_reason: {decision.reason}",
             f"raw_chars: {len(text)}",
@@ -327,7 +482,8 @@ class ToolOutputCompactorPlugin:
             header_lines.append(f"notice: {PLUGIN_NAME} compacted this result using {mode} mode")
 
         compacted = self._assemble_compacted(text, body, max_chars, header_lines, tool_name=tool_name, mode=mode, reason=decision.reason)
-        self._log_compaction(tool_name, len(text), len(compacted), mode, status)
+        self._log_compaction(tool_name, len(text), len(compacted), mode, status,
+                             result_type=extracted.result_type, deduped=False)
         return compacted
 
     def _assemble_compacted(
@@ -450,10 +606,11 @@ class ToolOutputCompactorPlugin:
         text = text.replace("\n", " ")
         return text if len(text) <= limit else text[:limit] + "..."
 
-    def _log_compaction(self, tool_name: str, raw_chars: int, output_chars: int, mode: str, status: str) -> None:
+    def _log_compaction(self, tool_name: str, raw_chars: int, output_chars: int, mode: str, status: str, result_type: str = "", deduped: bool = False) -> None:
         message = (
             f"compacted tool={tool_name} raw_chars={raw_chars} "
             f"output_chars={output_chars} mode={mode} status={status or 'unknown'}"
+            f" result_type={result_type or 'none'} dedup={deduped}"
         )
         logger.info(message)
         if _env_bool("TOOL_SLIM_DEBUG"):
@@ -971,6 +1128,193 @@ def register(ctx: Any) -> None:
     ctx.register_hook("transform_tool_result", plugin.transform_tool_result)
 
 
+class PytestExtractor(_Extractor):
+    """Type-aware extractor for pytest / test-runner output."""
+
+    kind = "pytest"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        return _is_pytest_output(_result_output_text(parsed, text))
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        out = _result_output_text(parsed, text)
+        lines: list[str] = []
+        match = _PYTEST_COUNTS_RE.search(out)
+        lines.append("pytest summary: " + match.group(1).strip() if match else "pytest run")
+        fails = _pytest_failure_lines(out)
+        if fails:
+            lines.append("Failing tests:")
+            lines.extend("  " + line for line in fails[:20])
+            if len(fails) > 20:
+                lines.append(f"  ... {len(fails) - 20} more failing/erroring tests")
+        evidence = _pytest_error_evidence(out)
+        if evidence:
+            lines.append("Error evidence:")
+            lines.extend("  " + line for line in evidence[:12])
+        return ExtractedResult(
+            result_type="pytest",
+            body="\n".join(lines),
+            decision=CompactionDecision("deterministic", "pytest output"),
+        )
+
+
+class GitStatusExtractor(_Extractor):
+    """Type-aware extractor for git status (short/porcelain or long form)."""
+
+    kind = "git_status"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        out = _result_output_text(parsed, text)
+        cmd = _command_hint(args)
+        if "git status" in cmd or "git -s" in cmd:
+            return _git_status_signal(out)
+        if not cmd and not isinstance(args, dict):
+            return _git_status_signal(out) and len(_git_porcelain_lines(out)) >= 8
+        return False
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        out = _result_output_text(parsed, text)
+        porcelain = _git_porcelain_lines(out)
+        staged: list[str] = []
+        unstaged: list[str] = []
+        untracked: list[str] = []
+        branch = ""
+        match = re.search(r"(?m)^On branch (\S+)", out)
+        if match:
+            branch = match.group(1)
+        if porcelain:
+            for row in porcelain:
+                x, y, path = row[0], row[1], row[3:].strip()
+                if x == "?":
+                    untracked.append(path)
+                elif x != " ":
+                    staged.append(path)
+                if y in "MD":
+                    unstaged.append(path)
+                elif y not in " ?" and x == " ":
+                    unstaged.append(path)
+        else:
+            heading = ""
+            for raw in out.splitlines():
+                if raw.startswith(("Changes to be committed:", "Changes not staged for commit:", "Untracked files:")):
+                    heading = raw.split(":")[0]
+                    continue
+                if heading == "" or not raw.strip() or raw.lstrip().startswith(("(", 'use "')):
+                    continue
+                if not raw.startswith((" ", "\t")):
+                    continue
+                if raw.startswith("  "):
+                    path = _git_normal_path(raw)
+                    if not path:
+                        continue
+                    if heading == "Changes to be committed":
+                        staged.append(path)
+                    elif heading == "Untracked files":
+                        untracked.append(path)
+                    else:
+                        unstaged.append(path)
+        lines = ["git status summary:"]
+        if branch:
+            lines.append(f"branch: {branch}")
+        lines.append(f"changes_to_be_committed: {len(staged)}")
+        lines.append(f"changes_not_staged: {len(unstaged)}")
+        lines.append(f"untracked_files: {len(untracked)}")
+        for label, items in (("staged", staged), ("modified/deleted", unstaged), ("untracked", untracked)):
+            if items:
+                shown = items[:20]
+                lines.append(f"{label} ({len(items)} total, first {len(shown)}):")
+                lines.extend("  " + path for path in shown)
+        return ExtractedResult(
+            result_type="git_status",
+            body="\n".join(lines),
+            decision=CompactionDecision("deterministic", "git status output"),
+        )
+
+
+class GitLogExtractor(_Extractor):
+    """Type-aware extractor for git log output."""
+
+    kind = "git_log"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        cmd = _command_hint(args)
+        if "git log" not in cmd:
+            return False
+        return True
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        out = _result_output_text(parsed, text)
+        lines: list[str] = []
+        if bool(re.search(r"(?m)^[0-9a-f]{7,40} .+", out)) and not re.search(r"(?m)^commit [0-9a-f]{40}", out):
+            rows = [line for line in out.splitlines() if re.match(r"^[0-9a-f]{7,40} ", line)]
+            lines.append(f"git log --oneline summary: {len(rows)} commits")
+            lines.extend("  " + row for row in rows[:25])
+        else:
+            blocks = out.split("\ncommit ")
+            lines.append(f"git log summary: {len(blocks)} commits")
+            subjects = []
+            for block in blocks:
+                subject = ""
+                for raw in block.splitlines()[1:]:
+                    if raw.strip() and not raw.startswith(("Author:", "Date:", "    ")):
+                        subject = raw.strip()
+                        break
+                if subject:
+                    subjects.append(subject)
+            lines.extend("  " + subject for subject in subjects[:15])
+        return ExtractedResult(
+            result_type="git_log",
+            body="\n".join(lines),
+            decision=CompactionDecision("deterministic", "git log output"),
+        )
+
+
+class SessionSearchExtractor(_Extractor):
+    """Generic structured extractor for Hermes session_search results."""
+
+    kind = "generic"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        return tool_name == "session_search" and parsed is not None
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        return ExtractedResult(result_type="session_search", body=plugin._compact_session_search(parsed))
+
+
+class JsonExtractor(_Extractor):
+    """Generic structured extractor for any JSON-shaped result."""
+
+    kind = "generic"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        return parsed is not None
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        limit = _env_int("TOOL_SLIM_IMPORTANT_LINES", 40)
+        return ExtractedResult(
+            result_type="json",
+            body=plugin._compact_json(parsed),
+            important=plugin._important_from_value(parsed, limit),
+        )
+
+
+class TextExtractor(_Extractor):
+    """Terminal generic fallback: any remaining textual result."""
+
+    kind = "generic"
+
+    def match(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> bool:
+        return True
+
+    def extract(self, plugin: Any, tool_name: str, args: Any, parsed: Any, text: str) -> ExtractedResult:
+        limit = _env_int("TOOL_SLIM_IMPORTANT_LINES", 40)
+        return ExtractedResult(
+            result_type="text",
+            body=plugin._compact_text(text),
+            important=plugin._important_lines(text, limit),
+        )
+
+
 ToolSlimPlugin = ToolOutputCompactorPlugin
 
 
@@ -1277,6 +1621,67 @@ def _demo() -> None:
     assert saved_match and int(saved_match.group(1)) > 0
     assert reduction_match and float(reduction_match.group(1)) > 0
     assert "omitted_chars_estimate: " in compact_kpi
+
+    filler = "\n".join(f"test_worker_{i} -> running stage {i % 7} of pipeline\n" for i in range(120))
+    pytest_body = (
+        "============================= test session starts =============================\n"
+        "collected 1042 items\n\n"
+        + filler
+        + "\n============================= FAILURES =============================\n"
+        "_______________________________ test_refresh _______________________________\n"
+        "tests/test_auth.py:42: in test_refresh\n"
+        "E       AssertionError: expected 200, got 401\n"
+        "=========================== short test summary info ===========================\n"
+        "FAILED tests/test_auth.py::test_refresh - AssertionError: expected 200, got 401\n"
+        "========================= 1 failed, 1041 passed in 12.45s =========================\n"
+    )
+    compact_pytest = plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "pytest -v tests/test_auth.py"},
+        result=pytest_body,
+        status="ok",
+    )
+    assert compact_pytest is not None
+    assert "result_type: pytest" in compact_pytest
+    assert "mode: deterministic" in compact_pytest
+    assert "decision_reason: pytest output" in compact_pytest
+    assert "pytest summary: 1 failed, 1041 passed in 12.45s" in compact_pytest
+    assert "FAILED tests/test_auth.py::test_refresh - AssertionError: expected 200, got 401" in compact_pytest
+    assert "E       AssertionError: expected 200, got 401" in compact_pytest
+    assert "test_worker_7" not in compact_pytest
+    assert len(compact_pytest) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
+
+    git_status_rows = [f" M src/module_{i:04d}.py" for i in range(200)]
+    git_status_rows += [f"A  src/new_{i}.py" for i in range(40)]
+    git_status_rows += [f"?? untracked_dir/file_{i}.txt" for i in range(30)]
+    compact_git_status = plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "git status --porcelain"},
+        result="\n".join(git_status_rows) + "\n",
+    )
+    assert compact_git_status is not None
+    assert "result_type: git_status" in compact_git_status
+    assert "mode: deterministic" in compact_git_status
+    assert "decision_reason: git status output" in compact_git_status
+    assert "git status summary:" in compact_git_status
+    assert "changes_to_be_committed: 40" in compact_git_status
+    assert "changes_not_staged: 200" in compact_git_status
+    assert "untracked_files: 30" in compact_git_status
+    assert "src/module_0000.py" in compact_git_status
+    assert "src/new_0.py" in compact_git_status
+    assert len(compact_git_status) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
+
+    git_log_rows = [f"{i:07x} Refactor subsystem {i}" for i in range(400, 0, -1)]
+    compact_git_log = plugin.transform_tool_result(
+        tool_name="terminal",
+        args={"command": "git log --oneline -200"},
+        result="\n".join(git_log_rows) + "\n",
+    )
+    assert compact_git_log is not None
+    assert "result_type: git_log" in compact_git_log
+    assert "git log --oneline summary: 400 commits" in compact_git_log
+    assert "Refactor subsystem 400" in compact_git_log
+    assert len(compact_git_log) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
 
     for name in list(os.environ):
         if name.startswith("TOOL_SLIM_LLM_"):

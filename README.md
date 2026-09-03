@@ -48,17 +48,17 @@ Known Hermes limitation observed in local testing: some inline runtime tools, no
 
 ## Compaction Flow
 
-`tool-output-compactor` follows a deterministic-first pipeline:
+`tool-output-compactor` follows a deterministic-first, type-aware pipeline:
 
 ```txt
 raw result
   -> stringify JSON/non-string result
   -> skip if len(result) <= TOOL_SLIM_MAX_CHARS
   -> parse JSON if possible
-  -> extract action facts and critical lines
-  -> choose deterministic or LLM-assisted mode
-  -> prepend compaction header
-  -> truncate to TOOL_SLIM_MAX_CHARS if needed
+  -> classify (first matching extractor in the registry)
+  -> extract type-aware signal   (pytest / git status / git log / ...)
+  -> generic structured/text fallback when no extractor matches
+  -> budget + render: prepend header, truncate to TOOL_SLIM_MAX_CHARS
 ```
 
 Decision order:
@@ -68,6 +68,19 @@ Decision order:
 - Medium results stay deterministic: below `TOOL_SLIM_LLM_MIN_CHARS`, LLM summarization is skipped even if enabled.
 - Large unstructured results may use LLM compaction only when `TOOL_SLIM_LLM_ENABLED=true` and endpoint/model settings exist.
 - If LLM compaction fails, deterministic output is used.
+
+### Type-aware extraction
+
+Classification uses only cheap deterministic signals: tool name, command/args and
+output patterns. No LLM classification. Typed extractors return a `result_type:`
+in the header and a deterministic decision reason (`pytest output`,
+`git status output`, `git log output`). Current extractors (0.5.0):
+
+- `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
+- `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
+- `GitLogExtractor`: commit counts + subjects (oneline and full log).
+- Generic fallbacks: `SessionSearchExtractor` (history), `JsonExtractor`
+  (keys-shape), `TextExtractor` (critical lines + head/tail).
 
 Every compacted result starts with a header like:
 
@@ -465,15 +478,29 @@ The benchmark intentionally checks boring invariants, not semantic intelligence.
 
 ## Development
 
-Run the built-in checks and benchmark:
+Run the built-in checks and benchmark (from this repo root; the plugin installs
+as a directory, so the same commands work from `~/.hermes/plugins/` with the
+`tool-output-compactor/` prefix):
 
 ```bash
-python3 -m compileall tool-output-compactor
-python3 tool-output-compactor/__init__.py
-python3 tool-output-compactor/benchmark.py
+python3 -m compileall __init__.py benchmark.py coexistence_test.py
+python3 __init__.py
+python3 benchmark.py
+python3 coexistence_test.py
 ```
 
 The self-check includes deterministic compaction and a mocked LLM path. It does not call a real LLM endpoint.
+
+`coexistence_test.py` is self-contained and always runs its 6 contract scenarios
+against a local stub guard: it emulates Hermes' `model_tools.py` hook flow
+(observers first on the raw result, then `transform_tool_result` callbacks in
+plugin load order, first string wins). It proves compaction never hides
+raw-result change from a progress guard, that guard recovery injection preempts
+compaction (documented ordering), and that identical/changed/polling/
+repeated-failure/noisy-with-semantic-change scenarios coexist. It never needs a
+sibling checkout. `COEXISTENCE_REAL=1 python3 coexistence_test.py` additionally
+runs the same scenarios against the real `hermes-progress-guard` source
+(override its plugin dir with `PROGRESS_GUARD_PLUGIN_DIR`).
 
 Compaction emits an `INFO` log through Python logging. Enable `TOOL_SLIM_DEBUG=true` to also write concise compaction lines to `stderr` while testing.
 

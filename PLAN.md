@@ -1,6 +1,30 @@
 # tool-output-compactor Plan
 
-## Phase 1: Confirm Hermes Hook
+> Updated 0.5.0: the plugin is redirected toward type-aware, information-preserving
+> extraction (see `REDIRECTION_PLAN.md`). Phases below the redirect marker describe
+> the pre-redirect roadmap and are kept as historical context.
+
+## Redirect (REDIRECTION_PLAN.md)
+
+- Phase 0 — repository + Hermes audit: done.
+- Phase 1 — `classify → extract → budget → render` pipeline with a typed
+  extractor registry and generic fallbacks: done (0.5.0).
+- Phase 2 — first specialized extractors (pytest, git status/log) with fixture
+  self-checks: done (0.5.0).
+- Phase 3 — coexistence contract tests with `hermes-progress-guard` + telemetry
+  (`extractor_selected` via `result_type`, `dedup` log fields, per-message KPIs):
+  done (0.5.0, `coexistence_test.py` 6/6 scenarios).
+- Future — more extractors only when justified by observed real workloads
+  (Docker, compiler/build, npm/pip, mypy, ESLint, coverage); per-section token
+  budgeting is speculative and deferred.
+
+Non-goals (from the redirect): do not duplicate Hermes context management,
+tool-output limits, pruning or loop guardrails; do not steer agent behavior;
+do not add fast-brain API calls.
+
+---
+
+## Historical: Phase 1: Confirm Hermes Hook
 
 Confirmed against `NousResearch/hermes-agent`.
 
@@ -44,42 +68,31 @@ Acceptance checks:
 - JSON output shows top-level shape and avoids dumping huge arrays.
 - Error lines survive compaction.
 
-## Phase 3: Tool-Specific Policies
+## Historical: Phase 3: Tool-Specific Policies
 
-Add specialized handling only when generic compaction is not enough.
+Superseded by the typed extractor registry in the redirect (Pytest/Git now; the
+generic structured/text paths cover read_file/grep/JSON/session_search). Keep
+specialized policies small; add a class per format only when generic compaction
+is not enough.
 
-Likely policies:
+## Historical: Phase 4: Optional LLM fallback
 
-- `terminal`: command, exit code, stderr, important lines, tail.
-- `read_file`: path, line range, head/tail.
-- `grep`/search: query, total matches, first matches.
-- MCP JSON APIs: top-level keys, status, ids, counts, errors.
-- logs: warnings/errors plus tail.
-
-Keep these as small `if tool_name` branches. No class hierarchy unless it becomes unavoidable.
-
-## Phase 4: Optional fast-brain Integration
-
-Not for V1.
-
-Optional LLM compression exists before fast-brain integration and remains local/runtime-only:
+LLM compression exists and remains local/runtime-only:
 
 - Disabled by default.
 - Uses an OpenAI-compatible `/v1/chat/completions` endpoint when configured.
 - Falls back to deterministic compaction on missing config, timeout or API failure.
 - Preserves deterministic critical lines alongside the LLM summary.
 
-Possible later flow:
+Possible later flow (only if a concrete need to recover raw outputs appears):
 
 ```txt
 raw tool output
   -> tool-output-compactor compact result for active context
-  -> optional raw/summary storage in fast-brain/archive
+  -> optional raw/summary archival
 ```
 
-Only add this if there is a concrete need to recover raw outputs later.
-
-## Phase 5: Rollout
+## Historical: Phase 5: Rollout
 
 Start on one Hermes profile only.
 
