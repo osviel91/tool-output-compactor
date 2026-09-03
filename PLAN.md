@@ -1,10 +1,14 @@
 # tool-output-compactor Plan
 
-> Updated 0.6.1: schema-once record-array compaction also applies when the
+> Updated 0.6.2: LLM-assisted compaction runs under a hard in-hook deadline
+> (`TOOL_SLIM_LLM_DEADLINE_SECONDS`, default 15s) so the deterministic fallback
+> always returns within Hermes' hook-callback budget even when the LLM endpoint
+> is slow (`urlopen` timeout is per-socket, not total).
+> Earlier: 0.6.1 made schema-once record-array compaction also apply when the
 > uniform record list is a JSON string inside a tool's structured text field
 > (terminal `output`/read `content`) — parsed and compacted schema-once with
 > meta keys preserved, instead of head/tail truncation.
-> Earlier: 0.6.0 introduced the schema-once `fields:` header + `|`-separated
+> Even earlier: 0.6.0 introduced the schema-once `fields:` header + `|`-separated
 > rows (deterministic, lossless) instead of repeating field names per record —
 > the consumer-side form of the TOON idea (The New Stack, Aug 2026). See the
 > redirect marker notes below.
@@ -27,6 +31,10 @@
   repo; real-guard coexistence verified `COEXISTENCE_REAL=1` 6/6; failure,
   noisy-log and listing paths re-validated live on `fast-new`. No default
   changes warranted.
+- 0.6.2 — hard in-hook LLM deadline (`_call_llm_bounded`, default 15s) so the
+  deterministic fallback survives slow LLM endpoints within Hermes' hook
+  budget; found live when the LLM path let a 30s hook timeout drop compaction
+  entirely.
 - Future — more extractors only when justified by observed real workloads
   (Docker, compiler/build, npm/pip, mypy, ESLint, coverage); per-section token
   budgeting is speculative and deferred.
@@ -131,6 +139,7 @@ TOOL_SLIM_AUDIT=false
 TOOL_SLIM_NOTICE_IN_RESULT=true
 TOOL_SLIM_LLM_ENABLED=true
 TOOL_SLIM_LLM_TIMEOUT_SECONDS=60
+TOOL_SLIM_LLM_DEADLINE_SECONDS=15
 TOOL_SLIM_LLM_MIN_CHARS=12000
 TOOL_SLIM_LLM_MAX_CHARS=3000
 TOOL_SLIM_LLM_MAX_TOKENS=700

@@ -74,7 +74,7 @@ Decision order:
 Classification uses only cheap deterministic signals: tool name, command/args and
 output patterns. No LLM classification. Typed extractors return a `result_type:`
 in the header and a deterministic decision reason (`pytest output`,
-`git status output`, `git log output`). Current extractors (0.6.1):
+`git status output`, `git log output`). Current extractors (0.6.2):
 
 - `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
 - `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
@@ -128,6 +128,8 @@ By default, compaction is deterministic and dependency-free:
 - Repeated terminal background starts with the same Hermes session, cwd/workdir and command are surfaced as `event: repeated_background_process_start` while keeping current and previous process ids visible.
 
 Optional LLM compaction can be enabled with an OpenAI-compatible `/v1/chat/completions` endpoint. The LLM only sees the deterministic compacted body, not the full raw result. If the LLM call fails, times out or returns empty text, `tool-output-compactor` falls back to deterministic compaction.
+
+The LLM call runs under a hard in-hook deadline (`TOOL_SLIM_LLM_DEADLINE_SECONDS`, default 15s) so the deterministic fallback always returns within Hermes' hook-callback budget even when the LLM endpoint is slow or trickles its response. The HTTP idle timeout (`TOOL_SLIM_LLM_TIMEOUT_SECONDS`) is not a total wall-clock bound; the deadline is.
 
 ### What It Preserves
 
@@ -329,7 +331,14 @@ TOOL_SLIM_LLM_MODEL=compressor
 TOOL_SLIM_LLM_API_KEY=
 
 # LLM request timeout. Recommended: 30-60s remote, 60-120s for cold local models.
+# NOTE: this is an HTTP idle timeout only, not a total wall-clock bound.
 TOOL_SLIM_LLM_TIMEOUT_SECONDS=60
+
+# Hard in-hook deadline for the LLM summarizer call. The call runs in a worker
+# thread and is abandoned after this many seconds so the deterministic fallback
+# returns within Hermes' hook-callback budget (30s default). Keep below that
+# budget. Recommended: 10-20.
+TOOL_SLIM_LLM_DEADLINE_SECONDS=15
 
 # Minimum raw result size before LLM is allowed. Below this, deterministic is safer and cheaper.
 # Recommended: 8000-20000. 12000 avoids summarizing medium structured results too early.

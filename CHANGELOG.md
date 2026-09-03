@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2
+
+- Bound LLM-assisted compaction with a hard in-hook deadline so the deterministic
+  body always wins within Hermes' hook-callback budget. The LLM summarizer call
+  now runs in a worker thread with a real wall-clock deadline
+  (`TOOL_SLIM_LLM_DEADLINE_SECONDS`, default 15s, safely under Hermes' 30s hook
+  budget); on expiry the plugin returns the deterministic fallback instead of
+  risking the whole hook being abandoned. Fixes a live defect where a slow LLM
+  endpoint kept the hook past its 30s budget, leaving tool output completely
+  uncompacted (`urllib` `urlopen(timeout=N)` is a per-socket idle bound, not a
+  total wall-clock cap).
+
 ## 0.6.1
 
 - Schema-once record-array compaction now also fires when the uniform record list is nested as a JSON string inside a tool's structured text field (the real terminal shape: `{output: "<json array string>", exit_code, error}`). The `output`/`content` text field is parsed, and if it holds a uniform record array it is compacted schema-once with `exit_code`/`error` preserved, instead of head/tail line truncation. Irregular or non-JSON text fields keep the existing head/tail rendering.

@@ -1,5 +1,5 @@
 name: tool-output-compactor
-version: 0.6.1
+version: 0.6.2
 description: "Compact large Hermes tool results before they re-enter model context"
 hooks:
   - transform_tool_result

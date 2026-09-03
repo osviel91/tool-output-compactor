@@ -6,13 +6,15 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 
 PLUGIN_NAME = "tool-output-compactor"
@@ -645,12 +647,14 @@ class ToolOutputCompactorPlugin:
         budget = _env_int("TOOL_SLIM_LLM_MAX_CHARS", max(800, max_chars // 2))
         prompt = self._llm_prompt(tool_name, deterministic_body, budget)
         try:
-            summary = self._call_llm(base_url, model, prompt)
+            summary = self._call_llm_bounded(base_url, model, prompt)
         except Exception as exc:
             if _env_bool("TOOL_SLIM_DEBUG"):
                 print(f"[{PLUGIN_NAME}] llm_compaction_failed error={type(exc).__name__}", file=sys.stderr)
             return None
 
+        if summary is None:
+            return None
         summary = summary.strip()
         if not summary:
             return None
@@ -704,6 +708,36 @@ class ToolOutputCompactorPlugin:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
         return data["choices"][0]["message"]["content"]
+
+    def _call_llm_bounded(self, base_url: str, model: str, prompt: str) -> str | None:
+        """Call the LLM under a hard wall-clock deadline.
+
+        ``urlopen(timeout=N)`` is only an idle/socket-operation bound, not a
+        total cap: a slow-trickling endpoint can keep the hook alive past
+        Hermes' hook-callback budget. Run the request in a daemon thread and
+        give up once ``TOOL_SLIM_LLM_DEADLINE_SECONDS`` elapses so the
+        deterministic body is always returned in time. Returns None on expiry.
+        """
+        deadline = _env_int("TOOL_SLIM_LLM_DEADLINE_SECONDS", 15)
+        result: dict[str, str] = {}
+
+        def _run() -> None:
+            try:
+                result["summary"] = self._call_llm(base_url, model, prompt)
+            except Exception:
+                result["summary"] = ""
+
+        worker = threading.Thread(target=_run, name=f"{PLUGIN_NAME}-llm", daemon=True)
+        worker.start()
+        worker.join(timeout=deadline)
+        if worker.is_alive():
+            if _env_bool("TOOL_SLIM_DEBUG"):
+                print(
+                    f"[{PLUGIN_NAME}] llm_compaction_deadline_exceeded after {deadline}s; using deterministic body",
+                    file=sys.stderr,
+                )
+            return None
+        return result.get("summary") or None
 
     def _compact_json(self, value: Any, depth: int = 0) -> str:
         max_items = _env_int("TOOL_SLIM_JSON_MAX_ITEMS", 20)
@@ -1653,6 +1687,15 @@ def _demo() -> None:
     assert "decision_reason: large unstructured result" in compact_llm
     assert "LLM summary" in compact_llm
     assert "kept useful summary" in compact_llm
+
+    os.environ["TOOL_SLIM_LLM_DEADLINE_SECONDS"] = "1"
+    slow_llm = ToolOutputCompactorPlugin()
+    slow_llm._call_llm = lambda *_: time.sleep(30)  # type: ignore[method-assign]
+    slow_compact = slow_llm.transform_tool_result(tool_name="terminal", result="noisy narrative prose\n" * 3000)
+    assert slow_compact is not None
+    assert "mode: deterministic" in slow_compact
+    assert "LLM summary" not in slow_compact
+    os.environ.pop("TOOL_SLIM_LLM_DEADLINE_SECONDS", None)
 
     session_search_messages = [
         {"id": 1, "role": "user", "content": "Check metadata for tracks in album"},
