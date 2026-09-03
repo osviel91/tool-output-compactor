@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Compact uniform arrays of same-shape JSON records with a schema-once layout (`JSON records: N rows` + `fields:` header + one `|`-separated row per record) instead of repeating field names per record. Deterministic, lossless, still budget-bounded; irregular/mixed/nested arrays keep the existing per-record expansion. Based on the "schema header once, records as rows" idea from the TOON article (The New Stack, Aug 2026).
+
 ## 0.5.0
 
 - Introduce a `classify → extract → budget → render` pipeline with a typed extractor registry (`_Extractor` base; `PytestExtractor`, `GitStatusExtractor`, `GitLogExtractor`) ahead of generic structured/text fallbacks. REDIRECTION_PLAN.md phases 1 + 2.

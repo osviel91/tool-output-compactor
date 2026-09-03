@@ -74,13 +74,20 @@ Decision order:
 Classification uses only cheap deterministic signals: tool name, command/args and
 output patterns. No LLM classification. Typed extractors return a `result_type:`
 in the header and a deterministic decision reason (`pytest output`,
-`git status output`, `git log output`). Current extractors (0.5.0):
+`git status output`, `git log output`). Current extractors (0.6.0):
 
 - `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
 - `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
 - `GitLogExtractor`: commit counts + subjects (oneline and full log).
 - Generic fallbacks: `SessionSearchExtractor` (history), `JsonExtractor`
   (keys-shape), `TextExtractor` (critical lines + head/tail).
+
+`JsonExtractor` compacts uniform arrays of same-shape records with a schema-once
+layout: the shared field names are emitted once in a `fields:` header and each
+record follows as one `|`-separated row (`JSON records: N rows`). Field names
+are not repeated per record, which keeps large structured listings
+deterministic, lossless and small in context. Irregular, nested or mixed-shape
+arrays fall back to the per-record JSON expansion.
 
 Every compacted result starts with a header like:
 

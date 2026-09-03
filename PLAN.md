@@ -1,8 +1,9 @@
 # tool-output-compactor Plan
 
-> Updated 0.5.0: the plugin is redirected toward type-aware, information-preserving
-> extraction (see `REDIRECTION_PLAN.md`). Phases below the redirect marker describe
-> the pre-redirect roadmap and are kept as historical context.
+> Updated 0.6.0: uniform JSON record arrays are compacted with a schema-once
+> header + `|`-separated rows (deterministic, lossless) instead of repeating
+> field names per record — the consumer-side form of the TOON idea (The New
+> Stack, Aug 2026). See the redirect marker notes below.
 
 ## Redirect (REDIRECTION_PLAN.md)
 
@@ -14,6 +15,8 @@
 - Phase 3 — coexistence contract tests with `hermes-progress-guard` + telemetry
   (`extractor_selected` via `result_type`, `dedup` log fields, per-message KPIs):
   done (0.5.0, `coexistence_test.py` 6/6 scenarios).
+- 0.6.0 — schema-once JSON record arrays (uniform, same-shape dict lists render
+  as `fields:` header + one row per record) inside the generic JSON path.
 - Future — more extractors only when justified by observed real workloads
   (Docker, compiler/build, npm/pip, mypy, ESLint, coverage); per-section token
   budgeting is speculative and deferred.

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 PLUGIN_NAME = "tool-output-compactor"
@@ -723,6 +723,9 @@ class ToolOutputCompactorPlugin:
             return "\n".join(lines)
 
         if isinstance(value, list):
+            rows = self._json_record_rows(value, max_items)
+            if rows is not None:
+                return rows
             lines = [f"JSON array with {len(value)} items"]
             for index, item in enumerate(value[:max_items]):
                 lines.append(f"- [{index}]: {self._compact_json(item, depth + 1)}")
@@ -731,6 +734,33 @@ class ToolOutputCompactorPlugin:
             return "\n".join(lines)
 
         return self._json_leaf(value)
+
+    def _json_record_rows(self, value: list[Any], max_items: int) -> str | None:
+        """Schema-once rendering for a uniform array of records.
+
+        When every element is a dict sharing the identical key set, emit the
+        field names once as a header and each record as a | -separated row, so
+        the model is not re-told the meaning of every field per record. This is
+        the lossless, format-aware compaction the TOON article motivates.
+        Returns None for irregular/nested/mixed arrays (existing expansion)."""
+        min_records = 5  # ponytail: uniform rows pay off on bulk arrays; tune if real workloads differ
+        if len(value) < min_records or not all(isinstance(item, dict) for item in value):
+            return None
+        keys = sorted(value[0].keys())
+        if not keys or any(sorted(item.keys()) != keys for item in value[1:]):
+            return None
+
+        lines = [f"JSON records: {len(value)} rows", "fields: " + ", ".join(keys)]
+        for index, item in enumerate(value[:max_items]):
+            cells = " | ".join(self._json_record_cell(item[key]) for key in keys)
+            lines.append(f"  [{index}] {cells}")
+        if len(value) > max_items:
+            lines.append(f"- ... {len(value) - max_items} more rows omitted")
+        return "\n".join(lines)
+
+    def _json_record_cell(self, value: Any) -> str:
+        cell = self._json_leaf(value)
+        return cell.replace(" | ", " / ")
 
     def _json_leaf(self, value: Any) -> str:
         text = self._to_text(value).replace("\n", " ")
@@ -1473,6 +1503,33 @@ def _demo() -> None:
     compact_json = plugin.transform_tool_result(tool_name="api", result=data)
     assert compact_json is not None
     assert "JSON object" in compact_json
+
+    record_severities = ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]
+    records = [
+        {
+            "key": f"AZ{i:08d}",
+            "severity": record_severities[i % len(record_severities)],
+            "component": f"src/main/java/com/acme/Module{i % 7}.java",
+            "line": i % 300,
+            "status": "OPEN",
+        }
+        for i in range(200)
+    ]
+    compact_records = plugin.transform_tool_result(tool_name="api", result=records)
+    assert compact_records is not None
+    assert "JSON records: 200 rows" in compact_records
+    assert "fields: component, key, line, severity, status" in compact_records
+    assert compact_records.count("fields: ") == 1
+    assert "src/main/java/com/acme/Module0.java | AZ00000000 | 0 | BLOCKER | OPEN" in compact_records
+    assert "more rows omitted" in compact_records
+    assert len(compact_records) <= _env_int("TOOL_SLIM_MAX_CHARS", 4000)
+
+    mixed_records = [{"a": i, "b": "x" * 50} for i in range(150)]
+    mixed_records += [{"c": i, "d": "y" * 50} for i in range(50)]
+    compact_mixed = plugin.transform_tool_result(tool_name="api", result=mixed_records)
+    assert compact_mixed is not None
+    assert "JSON records:" not in compact_mixed
+    assert "JSON array with 200 items" in compact_mixed
 
     noisy_json = {"output": "normal line\n" * 250 + "ERROR: compact-test-marker\n" + "normal line\n" * 250, "exit_code": 0, "error": None}
     compact_json_error = plugin.transform_tool_result(tool_name="terminal", result=noisy_json)
