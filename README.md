@@ -513,6 +513,11 @@ sibling checkout. `COEXISTENCE_REAL=1 python3 coexistence_test.py` additionally
 runs the same scenarios against the real `hermes-progress-guard` source
 (override its plugin dir with `PROGRESS_GUARD_PLUGIN_DIR`).
 
+For end-to-end validation against a real small model in the running Hermes
+Desktop gateway, see `live/live_test.py` (workload generators in `live/`). It
+requires the Hermes venv python (has `websockets`) and the Desktop backend port
+via `TOC_WS_PORT`; see AGENTS.md "Live Hermes Test".
+
 Compaction emits an `INFO` log through Python logging. Enable `TOOL_SLIM_DEBUG=true` to also write concise compaction lines to `stderr` while testing.
 
 ## Context Heuristic

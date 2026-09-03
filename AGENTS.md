@@ -174,6 +174,49 @@ guard and always runs 6/6 with no external checkout. Run
 same scenarios against the real hermes-progress-guard source
 (override its location with `PROGRESS_GUARD_PLUGIN_DIR`).
 
+## Live Hermes Test (done 0.6.0/0.6.1; re-run procedure)
+
+Live-tested end-to-end against the Desktop gateway with the small `fast-new`
+model. Schema-once compaction is confirmed working in real sessions: a 180-row
+uniform record array (terminal `output` field) rendered as `JSON records: 180
+rows` with one `fields:` header, and the model answered counts correctly from
+the compacted content alone. Failure path and critical-line preservation also
+verified live (exit codes/errors survive; deterministic mode wins when ERROR
+lines are present). No `TOOL_SLIM_*` default changes were warranted from the
+observed sessions.
+
+To re-run a live session (plugin hooks only fire inside the running Desktop
+backend process, which imports the installed plugin source at startup — see
+`~/.hermes/plugins/tool-output-compactor`):
+
+```bash
+# 1) find the gateway port the running Desktop backend picked
+lsof -nP -iTCP -sTCP:LISTEN | grep python
+# 2) run the driver with the venv python (websockets is not system-wide);
+#    it auto-fetches the per-instance session token from the HTTP root page
+TOC_WS_PORT=<port> ~/.hermes/hermes-agent/venv/bin/python live/live_test.py \
+  "Run ... with the terminal tool, then tell me ..."   # prompt as argv
+```
+
+`live/live_test.py` drives `session.create` + `prompt.submit` over the gateway
+WebSocket and prints the `stored_session_id`. Verify the compacted tool result
+persisted in `~/.hermes/state.db`:
+
+```bash
+sqlite3 ~/.hermes/state.db \
+  "SELECT id, role, tool_name, length(content) FROM messages
+   WHERE session_id='<stored_session_id>' ORDER BY id;"
+```
+
+The compacted message should start with `[tool-output-compactor compacted tool
+result]` and contain `JSON records:` + `fields:` for the schema-once path.
+`live/gen_records.py` (uniform records), `live/gen_fail.py` (failure/exit-1),
+`live/gen_log.py` (noisy log) and `live/gen_status.py` (git-style listing) are
+the workload triggers. The backend must be restarted after syncing a new
+plugin version — the serve process never reloads plugin source.
+
 ## Next Agent First Task
 
-Test in a live Hermes profile and tune defaults if useful details are missing from compacted outputs.
+Tune defaults only if a real live session shows a useful detail missing from a
+compacted output; extend the extractor registry only when a real workload
+outgrows the generic JSON/text paths.

@@ -23,6 +23,10 @@
   as `fields:` header + one row per record) inside the generic JSON path.
 - 0.6.1 — schema-once also fires for uniform record lists embedded as a JSON
   string in a tool's `output`/`content` text field (the real terminal shape).
+- 0.6.x — live harness (`live/live_test.py` + workload generators) persisted in
+  repo; real-guard coexistence verified `COEXISTENCE_REAL=1` 6/6; failure,
+  noisy-log and listing paths re-validated live on `fast-new`. No default
+  changes warranted.
 - Future — more extractors only when justified by observed real workloads
   (Docker, compiler/build, npm/pip, mypy, ESLint, coverage); per-section token
   budgeting is speculative and deferred.
