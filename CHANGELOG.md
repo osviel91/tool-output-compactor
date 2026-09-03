@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- Schema-once record-array compaction now also fires when the uniform record list is nested as a JSON string inside a tool's structured text field (the real terminal shape: `{output: "<json array string>", exit_code, error}`). The `output`/`content` text field is parsed, and if it holds a uniform record array it is compacted schema-once with `exit_code`/`error` preserved, instead of head/tail line truncation. Irregular or non-JSON text fields keep the existing head/tail rendering.
+
 ## 0.6.0
 
 - Compact uniform arrays of same-shape JSON records with a schema-once layout (`JSON records: N rows` + `fields:` header + one `|`-separated row per record) instead of repeating field names per record. Deterministic, lossless, still budget-bounded; irregular/mixed/nested arrays keep the existing per-record expansion. Based on the "schema header once, records as rows" idea from the TOON article (The New Stack, Aug 2026).

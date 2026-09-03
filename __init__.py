@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 
 PLUGIN_NAME = "tool-output-compactor"
@@ -711,10 +711,15 @@ class ToolOutputCompactorPlugin:
             return self._json_leaf(value)
 
         if isinstance(value, dict):
-            if isinstance(value.get("content"), str):
-                return self._compact_structured_text_result(value, "content")
-            if isinstance(value.get("output"), str) and len(value["output"]) > 1000:
-                return self._compact_structured_text_result(value, "output")
+            for field in ("content", "output"):
+                if not isinstance(value.get(field), str):
+                    continue
+                records = self._compact_text_field_records(value, field, max_items)
+                if records is not None:
+                    return records
+                if field == "output" and len(value["output"]) <= 1000:
+                    continue
+                return self._compact_structured_text_result(value, field)
             lines = [f"JSON object with {len(value)} keys: {', '.join(map(str, list(value)[:max_items]))}"]
             for key, item in list(value.items())[:max_items]:
                 lines.append(f"- {key}: {self._compact_json(item, depth + 1)}")
@@ -761,6 +766,31 @@ class ToolOutputCompactorPlugin:
     def _json_record_cell(self, value: Any) -> str:
         cell = self._json_leaf(value)
         return cell.replace(" | ", " / ")
+
+    def _compact_text_field_records(self, value: dict[str, Any], field: str, max_items: int) -> str | None:
+        """A text field (terminal ``output``, read ``content``) may itself hold a
+        JSON record array as an escaped string. When it does, compact it
+        schema-once instead of head/tail truncation. Returns None otherwise."""
+        text = value.get(field)
+        if not isinstance(text, str) or len(text) <= 1000:
+            return None
+        if text.lstrip()[:1] not in ("[", "{"):
+            return None
+        parsed = self._try_json(text)
+        if not isinstance(parsed, list):
+            return None
+        rows = self._json_record_rows(parsed, max_items)
+        if rows is None:
+            return None
+
+        lines = [f"JSON object with {len(value)} keys: {', '.join(map(str, value.keys()))}"]
+        for meta_key in ("total_lines", "file_size", "truncated", "hint", "is_binary", "is_image", "exit_code", "error", "status"):
+            if meta_key in value and meta_key != field:
+                lines.append(f"- {meta_key}: {self._json_leaf(value[meta_key])}")
+        lines.append(f"- {field}: parsed as JSON (below)")
+        lines.extend(f"  {line}" for line in rows.splitlines())
+        return "\n".join(lines)
+
 
     def _json_leaf(self, value: Any) -> str:
         text = self._to_text(value).replace("\n", " ")
@@ -1530,6 +1560,19 @@ def _demo() -> None:
     assert compact_mixed is not None
     assert "JSON records:" not in compact_mixed
     assert "JSON array with 200 items" in compact_mixed
+
+    import json as _json
+
+    nested_records = {"output": _json.dumps(records), "exit_code": 0, "error": None}
+    compact_nested = plugin.transform_tool_result(tool_name="terminal", args={"command": "python gen_records.py"}, result=nested_records)
+    assert compact_nested is not None
+    assert "JSON records: 200 rows" in compact_nested
+    assert "fields: component, key, line, severity, status" in compact_nested
+    assert compact_nested.count("fields: ") == 1
+    assert "src/main/java/com/acme/Module0.java | AZ00000000 | 0 | BLOCKER | OPEN" in compact_nested
+    assert "more rows omitted" in compact_nested
+    assert "- exit_code: 0" in compact_nested
+    assert "Head lines" not in compact_nested
 
     noisy_json = {"output": "normal line\n" * 250 + "ERROR: compact-test-marker\n" + "normal line\n" * 250, "exit_code": 0, "error": None}
     compact_json_error = plugin.transform_tool_result(tool_name="terminal", result=noisy_json)

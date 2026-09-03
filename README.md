@@ -74,7 +74,7 @@ Decision order:
 Classification uses only cheap deterministic signals: tool name, command/args and
 output patterns. No LLM classification. Typed extractors return a `result_type:`
 in the header and a deterministic decision reason (`pytest output`,
-`git status output`, `git log output`). Current extractors (0.6.0):
+`git status output`, `git log output`). Current extractors (0.6.1):
 
 - `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
 - `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
@@ -86,7 +86,11 @@ in the header and a deterministic decision reason (`pytest output`,
 layout: the shared field names are emitted once in a `fields:` header and each
 record follows as one `|`-separated row (`JSON records: N rows`). Field names
 are not repeated per record, which keeps large structured listings
-deterministic, lossless and small in context. Irregular, nested or mixed-shape
+deterministic, lossless and small in context. This also applies when the record
+list arrives as a JSON string inside a tool's structured text field (the real
+terminal shape `{output: "<json string>", exit_code, error}`): the text field is
+parsed and uniform records are compacted schema-once instead of head/tail
+truncation, with `exit_code`/`error` preserved. Irregular, nested or mixed-shape
 arrays fall back to the per-record JSON expansion.
 
 Every compacted result starts with a header like:
