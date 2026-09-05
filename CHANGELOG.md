@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.3
+
+- Replace obvious binary/base64 blobs in compacted tool output with omission
+  stubs before head/tail sampling. Preserves useful context such as APIC/image
+  metadata, payload kind, character count and short hash while keeping raw
+  image/audio bytes out of model context.
+
 ## 0.6.2
 
 - Bound LLM-assisted compaction with a hard in-hook deadline so the deterministic

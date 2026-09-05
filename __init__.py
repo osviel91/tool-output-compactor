@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 
 PLUGIN_NAME = "tool-output-compactor"

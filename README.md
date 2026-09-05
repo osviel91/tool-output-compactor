@@ -74,7 +74,7 @@ Decision order:
 Classification uses only cheap deterministic signals: tool name, command/args and
 output patterns. No LLM classification. Typed extractors return a `result_type:`
 in the header and a deterministic decision reason (`pytest output`,
-`git status output`, `git log output`). Current extractors (0.6.2):
+`git status output`, `git log output`). Current extractors (0.6.3):
 
 - `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
 - `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
