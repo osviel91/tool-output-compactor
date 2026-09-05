@@ -24,9 +24,11 @@ Do not add fast-brain API calls in V1. Do not duplicate Hermes-native context ma
 - `__init__.py`: dependency-free base plugin with deterministic, hybrid and optional LLM-assisted compaction, plus a typed extractor registry (`PytestExtractor`, `GitStatusExtractor`, `GitLogExtractor`, ...) with generic structured/text fallbacks.
 - `benchmark.py`: dependency-free synthetic benchmark plus real Hermes session diagnostics.
 - `README.md`: user-facing overview and install sketch.
-- `PLAN.md`: implementation roadmap.
-- `REDIRECTION_PLAN.md`: audit-first plan redirecting the plugin toward type-aware, information-preserving extraction (Phase 1 + 2 done).
+- `docs/plan/README.md`: permanent project planning and next-work direction.
+- `PLAN.md`: compatibility pointer to `docs/plan/README.md`.
 - `AGENTS.md`: this handoff.
+
+`docs/plan/README.md` is the source of truth for permanent project planning.
 
 ## Hermes Hook Contract
 
@@ -63,6 +65,7 @@ Adapt it once the real contract is known.
 - Always say compaction happened and how much was omitted.
 - Include runtime KPIs in compacted results so Hermes can see impact: `saved_chars_estimate`, `reduction_pct_estimate` and a one-line banner (`tool-output-compactor: compacted <tool> · <pct>% reduction · saved <n> chars · <mode>`).
 - Prefer one boring file over abstractions.
+- Every user-visible change must update `CHANGELOG.md` and bump the plugin version in `VERSION`, `plugin.yaml` and `__init__.py`.
 
 ## Local Hermes Test Context
 

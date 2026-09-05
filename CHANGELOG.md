@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.5
+
+- Collapse planning into `docs/plan/README.md` as the only source of truth and
+  remove `REDIRECTION_PLAN.md` instead of keeping a second planning pointer.
+
+## 0.6.4
+
+- Move permanent project planning to `docs/plan/README.md`, reduce
+  `REDIRECTION_PLAN.md` and `PLAN.md` to pointers, and document the release
+  hygiene rule that every user-visible change must bump the plugin version and
+  update this changelog.
+
 ## 0.6.3
 
 - Replace obvious binary/base64 blobs in compacted tool output with omission
