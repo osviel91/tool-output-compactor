@@ -131,6 +131,10 @@ _PYTEST_COUNTS_RE = re.compile(
 )
 _PYTEST_VERBOSE_RE = re.compile(r"(?m)^.*\.py::[^\s:]+ (?:PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s*$")
 _GIT_PORCELAIN_RE = re.compile(r"(?m)^([ MADRCU?]{1,2}) ([^\n]+)$")
+_DATA_IMAGE_RE = re.compile(r"data:image/(?P<mime>[a-z0-9.+-]+);base64,(?P<body>[A-Za-z0-9+/=\s]{2048,})", re.IGNORECASE)
+_BYTES_RE = re.compile(r"b(?P<quote>['\"])(?P<body>(?:\\x[0-9a-fA-F]{2}|\\[0-7]{3}|\\.|(?! (?P=quote)).){2048,})(?P=quote)", re.VERBOSE)
+_HEX_ESCAPE_RUN_RE = re.compile(r"(?:\\x[0-9a-fA-F]{2}){512,}")
+_BASE64_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/=])(?P<body>[A-Za-z0-9+/]{4096,}={0,2})(?![A-Za-z0-9+/=])")
 
 
 def _is_pytest_output(out: str) -> bool:
@@ -608,6 +612,34 @@ class ToolOutputCompactorPlugin:
         text = text.replace("\n", " ")
         return text if len(text) <= limit else text[:limit] + "..."
 
+    def _binary_stub(self, kind: str, payload: str) -> str:
+        digest = hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"[binary payload omitted: kind={kind}, chars={len(payload)}, sha256={digest}]"
+
+    def _scrub_binary_payloads(self, text: str) -> str:
+        if len(text) < 2048:
+            return text
+
+        def data_image(match: re.Match[str]) -> str:
+            return match.group(0)[: match.start("body") - match.start(0)] + self._binary_stub(f"image/{match.group('mime').lower()} base64", match.group("body"))
+
+        def bytes_repr(match: re.Match[str]) -> str:
+            body = match.group("body")
+            if "\\xff\\xd8" in body[:80].lower() or "\\x89png" in body[:80].lower() or body.count("\\x") >= 512:
+                return self._binary_stub("python-bytes", body)
+            return match.group(0)
+
+        def base64_run(match: re.Match[str]) -> str:
+            body = match.group("body")
+            if len(set(body.rstrip("="))) < 16:
+                return match.group(0)
+            return self._binary_stub("base64", body)
+
+        text = _DATA_IMAGE_RE.sub(data_image, text)
+        text = _BYTES_RE.sub(bytes_repr, text)
+        text = _HEX_ESCAPE_RUN_RE.sub(lambda m: self._binary_stub("hex-escaped-bytes", m.group(0)), text)
+        return _BASE64_RUN_RE.sub(base64_run, text)
+
     def _log_compaction(self, tool_name: str, raw_chars: int, output_chars: int, mode: str, status: str, result_type: str = "", deduped: bool = False) -> None:
         message = (
             f"compacted tool={tool_name} raw_chars={raw_chars} "
@@ -827,7 +859,7 @@ class ToolOutputCompactorPlugin:
 
 
     def _json_leaf(self, value: Any) -> str:
-        text = self._to_text(value).replace("\n", " ")
+        text = self._scrub_binary_payloads(self._to_text(value)).replace("\n", " ")
         return text if len(text) <= 240 else text[:240] + "..."
 
     def _compact_structured_text_result(self, value: dict[str, Any], key: str) -> str:
@@ -969,6 +1001,7 @@ class ToolOutputCompactorPlugin:
         return False
 
     def _compact_lines(self, text: str) -> str:
+        text = self._scrub_binary_payloads(text)
         all_lines = text.splitlines()
         if not all_lines:
             return ""
@@ -989,6 +1022,7 @@ class ToolOutputCompactorPlugin:
         return "\n\n".join(parts)
 
     def _compact_text(self, text: str) -> str:
+        text = self._scrub_binary_payloads(text)
         head_chars = _env_int("TOOL_SLIM_HEAD_CHARS", 1200)
         tail_chars = _env_int("TOOL_SLIM_TAIL_CHARS", 1200)
         important_limit = _env_int("TOOL_SLIM_IMPORTANT_LINES", 40)
@@ -1612,6 +1646,20 @@ def _demo() -> None:
     compact_json_error = plugin.transform_tool_result(tool_name="terminal", result=noisy_json)
     assert compact_json_error is not None
     assert "ERROR: compact-test-marker" in compact_json_error
+
+    jpeg_bytes = "b'\\xff\\xd8" + "\\x00" * 3000 + "\\xff\\xd9'"
+    binary_json = {
+        "output": f"APIC frame mime=image/jpeg desc=cover data={jpeg_bytes}\ncover_art_present=True\n",
+        "exit_code": 0,
+        "error": None,
+    }
+    compact_binary = plugin.transform_tool_result(tool_name="terminal", args={"command": "python3 debug_cover.py"}, result=binary_json)
+    assert compact_binary is not None
+    assert "APIC" in compact_binary
+    assert "image/jpeg" in compact_binary
+    assert "binary payload omitted" in compact_binary
+    assert "exit_code: 0" in compact_binary
+    assert "\\xff\\xd8" not in compact_binary
 
     action_json = {"output": "noise\n" * 800, "exit_code": 7, "stderr": "fatal: action failed", "error": None}
     compact_action = plugin.transform_tool_result(tool_name="terminal", args={"command": "python script.py"}, result=action_json)

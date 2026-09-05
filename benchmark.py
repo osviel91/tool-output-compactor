@@ -129,8 +129,25 @@ def _case_opencode_patch() -> dict[str, Any]:
     }
 
 
+def _case_binary_payload() -> dict[str, Any]:
+    jpeg_bytes = "b'\\xff\\xd8" + "\\x00" * 3000 + "\\xff\\xd9'"
+    result = {
+        "output": f"APIC frame mime=image/jpeg desc=cover data={jpeg_bytes}\ncover_art_present=True\n",
+        "exit_code": 0,
+        "error": None,
+    }
+    return {
+        "name": "binary payload omitted",
+        "tool": "terminal",
+        "args": {"command": "python3 debug_cover.py"},
+        "result": result,
+        "required": ["python3 debug_cover.py", "APIC", "image/jpeg", "binary payload omitted", "exit_code: 0"],
+        "should_compact": True,
+    }
+
+
 def synthetic_cases() -> list[dict[str, Any]]:
-    return [_case_small(), _case_terminal_failure(), _case_read_listing(), _case_session_search(), _case_opencode_patch()]
+    return [_case_small(), _case_terminal_failure(), _case_read_listing(), _case_session_search(), _case_opencode_patch(), _case_binary_payload()]
 
 
 def _mode(output: str | None) -> str:

@@ -119,6 +119,7 @@ By default, compaction is deterministic and dependency-free:
 - Small results are left unchanged.
 - Large plain text keeps important lines, head and tail.
 - Large JSON keeps shape, keys and bounded item previews.
+- Obvious binary/base64 blobs such as image data URIs, Python byte reprs and long escaped-byte runs are replaced with short omission stubs before head/tail sampling.
 - Errors, warnings, tracebacks, stderr and exit codes are prioritized, including inside JSON string fields like terminal `output`.
 - Coding-assistant outputs and code/diff signals stay deterministic: `opencode` commands, fenced code blocks, unified diffs, JSON patch parts and `diff`/`patch` fields are preserved before prose is compacted.
 - Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
@@ -140,6 +141,7 @@ The LLM call runs under a hard in-hook deadline (`TOOL_SLIM_LLM_DEADLINE_SECONDS
 - Literal code/diff sections from coding assistants, including Markdown fences, `diff --git` blocks, unified hunks and OpenCode JSON patch parts when available.
 - Head and tail of structured text, listings and file-like outputs.
 - JSON shape and bounded previews for large objects/arrays.
+- Binary payload metadata and omission facts (`kind`, character count, short hash), not raw image/audio bytes.
 
 ### What It Does Not Do
 
