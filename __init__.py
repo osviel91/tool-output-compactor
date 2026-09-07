@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 
 
 PLUGIN_NAME = "tool-output-compactor"
@@ -63,6 +63,12 @@ CODING_TOOL_NAMES = {
 }
 
 STRUCTURED_TOOL_NAMES = {"read_file", "glob", "grep", "session_search"}
+
+
+def _is_passthrough_tool(tool_name: str) -> bool:
+    """Leave authoritative documents and MCP results to Hermes' native handlers."""
+    name = (tool_name or "").lower()
+    return name == "skill_view" or name.startswith(("mcp__", "mcp_"))
 
 
 @dataclass(frozen=True)
@@ -255,6 +261,9 @@ class ToolOutputCompactorPlugin:
             return None
 
         text = self._to_text(result)
+        if _is_passthrough_tool(tool_name):
+            self._audit_decision(tool_name or "unknown", "unchanged", "protected tool result", len(text), status)
+            return None
         if tool_call_id:
             call_key = f"{session_id}:{tool_name or 'unknown'}:{tool_call_id}"
             if call_key in self._seen_call_ids:
@@ -446,7 +455,7 @@ class ToolOutputCompactorPlugin:
         deterministic_body = extracted.body
 
         # decorate with preserved action facts + critical lines
-        preserved = self._preserved_sections(tool_name, args, parsed, extracted.important)
+        preserved = self._preserved_sections(tool_name, args, parsed, extracted.important, deterministic_body)
         if preserved:
             deterministic_body = preserved + "\n\n---\n\n" + deterministic_body
 
@@ -473,8 +482,6 @@ class ToolOutputCompactorPlugin:
         header_lines += [
             f"mode: {mode}",
             f"decision_reason: {decision.reason}",
-            f"raw_chars: {len(text)}",
-            f"target_chars: {max_chars}",
         ]
         if status:
             header_lines.append(f"status: {status}")
@@ -514,7 +521,6 @@ class ToolOutputCompactorPlugin:
                 banner += f" ({reason})"
             lines = [header_lines[0], banner, *header_lines[1:]]
             lines += [
-                f"omitted_chars_estimate: {saved}",
                 f"saved_chars_estimate: {saved}",
                 f"reduction_pct_estimate: {reduction}",
             ]
@@ -1084,7 +1090,6 @@ class ToolOutputCompactorPlugin:
         seen: set[str] = set()
         used = 0
         omitted = 0
-        truncated = False
         for snippet in snippets:
             snippet = snippet.strip()
             key = snippet[:500]
@@ -1095,14 +1100,7 @@ class ToolOutputCompactorPlugin:
                 kept.append(snippet)
                 used += len(snippet) + 2
                 continue
-            remaining = budget - used - 80
-            if remaining > 200:
-                kept.append(snippet[:remaining] + "\n[code/diff snippet truncated]")
-                used = budget
-                truncated = True
-            else:
-                omitted += 1
-            omitted += len(snippets) - len(seen)
+            omitted += 1 + len(snippets) - len(seen)
             break
 
         if not kept:
@@ -1111,8 +1109,6 @@ class ToolOutputCompactorPlugin:
         lines.extend(kept)
         if omitted:
             lines.append(f"code_diff_sections_omitted: {omitted}")
-        if truncated:
-            lines.append("code_diff_truncated: true")
         return "\n\n".join(lines)
 
     def _code_diff_snippets_from_value(self, value: Any, depth: int = 0) -> list[str]:
@@ -1123,7 +1119,7 @@ class ToolOutputCompactorPlugin:
             if value.get("type") == "patch" and value.get("files"):
                 snippets.append("patch files: " + self._one_line(self._to_text(value.get("files")), 1000))
             for key, child in value.items():
-                if key in {"diff", "output", "content", "text"} and isinstance(child, str):
+                if key in {"diff", "output", "content", "text", "delta"} and isinstance(child, str):
                     snippets.extend(self._code_diff_snippets(child))
                 elif key == "patch":
                     snippets.append(self._one_line(self._to_text(child), 2000))
@@ -1149,11 +1145,15 @@ class ToolOutputCompactorPlugin:
                 i += 1
                 while i < len(lines) and not lines[i].startswith(("diff --git", "Index: ")):
                     i += 1
-                snippets.append("\n".join(lines[start:i]))
+                hunk = next((j for j in range(start + 1, i) if lines[j].startswith("@@ ")), None)
+                snippets.append("\n".join(lines[start:(hunk + 1 if hunk is not None else i)]))
+                i = start + 1
                 continue
             if line.startswith("@@ "):
                 start = max(0, i - 2)
-                end = min(len(lines), i + 60)
+                end = i + 1
+                while end < len(lines) and (not lines[end] or lines[end].startswith((" ", "+", "-", "\\"))):
+                    end += 1
                 snippets.append("\n".join(lines[start:end]))
             i += 1
         return snippets
@@ -1215,14 +1215,20 @@ class ToolOutputCompactorPlugin:
         visit(value, "", 0)
         return lines
 
-    def _preserved_sections(self, tool_name: str, args: Any, parsed: Any, important: list[str]) -> str:
+    def _preserved_sections(self, tool_name: str, args: Any, parsed: Any, important: list[str], body: str = "") -> str:
         facts = self._action_facts(tool_name, args, parsed)
+        facts = [line for line in facts if not self._line_in_body(line, body)]
+        important = [line for line in important if line not in facts and not self._line_in_body(line, body)]
         sections = []
         if facts:
             sections.append("Preserved action facts:\n" + "\n".join(facts))
         if important:
             sections.append("Preserved critical lines:\n" + "\n".join(important))
         return "\n\n".join(sections)
+
+    def _line_in_body(self, line: str, body: str) -> bool:
+        normalized = line.removeprefix("- ").strip()
+        return bool(normalized and normalized in body)
 
     def _action_facts(self, tool_name: str, args: Any, parsed: Any) -> list[str]:
         facts: list[str] = []
@@ -1529,7 +1535,6 @@ def _demo() -> None:
     assert "mode: dedup" in second_read
     assert "args.path: /tmp/listing.txt" in second_read
     assert "status: ok" in second_read
-    assert "raw_chars:" in second_read
     assert "saved_chars_estimate:" in second_read
 
     call_plugin = ToolOutputCompactorPlugin()
@@ -1670,6 +1675,7 @@ def _demo() -> None:
     assert "args.command: python script.py" in compact_action
     assert "exit_code: 7" in compact_action
     assert "stderr: fatal: action failed" in compact_action
+    assert compact_action.count("stderr: fatal: action failed") == 1
 
     listing = "\n".join(f"{i}|{i:02d} - Artist - Track {i} - long sortable library row.mp3" for i in range(1, 121))
     read_file_result = {
@@ -1811,7 +1817,15 @@ def _demo() -> None:
     reduction_match = _re.search(r"reduction_pct_estimate: ([\d.]+)", compact_kpi)
     assert saved_match and int(saved_match.group(1)) > 0
     assert reduction_match and float(reduction_match.group(1)) > 0
-    assert "omitted_chars_estimate: " in compact_kpi
+    assert "omitted_chars_estimate: " not in compact_kpi
+
+    protected = ToolOutputCompactorPlugin()
+    skill_result = '{"content": "' + "skill rule\\n" * 3000 + '"}'
+    assert protected.transform_tool_result(tool_name="skill_view", result=skill_result, session_id="skill") is None
+    assert protected.transform_tool_result(tool_name="skill_view", result=skill_result, session_id="skill") is None
+    mcp_result = '{"result": "' + "tool context\\n" * 3000 + '"}'
+    assert protected.transform_tool_result(tool_name="mcp__server__get_tools", result=mcp_result, session_id="mcp") is None
+    assert protected.transform_tool_result(tool_name="mcp_server_get_tools", result=mcp_result, session_id="mcp") is None
 
     filler = "\n".join(f"test_worker_{i} -> running stage {i % 7} of pipeline\n" for i in range(120))
     pytest_body = (

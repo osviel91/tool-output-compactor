@@ -74,7 +74,7 @@ Decision order:
 Classification uses only cheap deterministic signals: tool name, command/args and
 output patterns. No LLM classification. Typed extractors return a `result_type:`
 in the header and a deterministic decision reason (`pytest output`,
-`git status output`, `git log output`). Current extractors (0.6.5):
+`git status output`, `git log output`). Current extractors (0.6.6):
 
 - `PytestExtractor`: pytest summary counts, failing test nodes, error evidence lines.
 - `GitStatusExtractor`: branch, staged / modified-deleted / untracked counts, first paths (porcelain and long formats).
@@ -101,9 +101,6 @@ tool-output-compactor: compacted terminal · 68.3% reduction · saved 8200 chars
 tool: terminal
 mode: deterministic
 decision_reason: structured text
-raw_chars: 12000
-target_chars: 4000
-omitted_chars_estimate: 8200
 saved_chars_estimate: 8200
 reduction_pct_estimate: 68.3
 status: ok
@@ -117,13 +114,16 @@ The second line is a one-line banner visible to the human in the tool card, repo
 By default, compaction is deterministic and dependency-free:
 
 - Small results are left unchanged.
+- `skill_view` results are left byte-for-byte unchanged, including repeated reads.
+- MCP tools (`mcp__...` and legacy `mcp_...`) are left to Hermes' native
+  spillover and result-size handling; the plugin does not compact them first.
 - Large plain text keeps important lines, head and tail.
 - Large JSON keeps shape, keys and bounded item previews.
 - Obvious binary/base64 blobs such as image data URIs, Python byte reprs and long escaped-byte runs are replaced with short omission stubs before head/tail sampling.
 - Errors, warnings, tracebacks, stderr and exit codes are prioritized, including inside JSON string fields like terminal `output`.
 - Coding-assistant outputs and code/diff signals stay deterministic: `opencode` commands, fenced code blocks, unified diffs, JSON patch parts and `diff`/`patch` fields are preserved before prose is compacted.
 - Concrete action facts are preserved separately from summaries: tool name, command-like args, paths, queries, exit codes, stderr, errors, status and approvals.
-- The compacted result always says compaction happened and reports omitted size.
+- The compacted result always says compaction happened and reports its savings.
 - The compacted result includes lightweight KPIs for Hermes itself: `saved_chars_estimate` and `reduction_pct_estimate`.
 - Terminal background-start results are normalized into a short factual record (`event`, `session_id`, `pid`, `command`, `notify_on_complete`) so agents can see the process handle clearly without receiving behavior directives.
 - Repeated terminal background starts with the same Hermes session, cwd/workdir and command are surfaced as `event: repeated_background_process_start` while keeping current and previous process ids visible.
@@ -213,9 +213,8 @@ Large terminal/log output, deterministic:
 tool: terminal
 mode: deterministic
 decision_reason: critical lines present
-raw_chars: 18000
-target_chars: 4000
-omitted_chars_estimate: 14500
+saved_chars_estimate: 14500
+reduction_pct_estimate: 80.6
 
 Preserved action facts:
 tool: terminal
@@ -365,6 +364,10 @@ TOOL_SLIM_LLM_TIMEOUT_SECONDS=60
 ```
 
 Do not commit API keys.
+
+Skills and MCP results are intentionally excluded from this plugin. Hermes owns
+skill fidelity and MCP spillover; large MCP responses are persisted by Hermes
+with a preview and a path for `read_file` instead of being compacted twice.
 
 ## Install
 

@@ -254,9 +254,9 @@ def analyze_session(session_id: str, db_path: Path, max_chars: int) -> dict[str,
         if content and HEADER in content:
             item["compacted"] += 1
             compacted.append(message_id)
-            match = re.search(r"raw_chars: (\d+)", content)
+            match = re.search(r"saved_chars_estimate: (\d+)", content)
             if match:
-                estimated_saved += max(0, int(match.group(1)) - length)
+                estimated_saved += int(match.group(1))
         elif length > max_chars:
             item["large_uncompacted"] += 1
             large_uncompacted.append({"id": message_id, "tool": tool_name, "chars": length})

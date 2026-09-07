@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.6
+
+- Leave `skill_view` results unchanged so skill instructions, schemas, warnings
+  and code examples are never compacted or deduplicated.
+- Leave MCP tool results unchanged so Hermes can apply its native 50K spillover
+  handling instead of receiving a second, lossy compaction pass.
+- Remove redundant visible size metadata from compacted results while retaining
+  the required savings KPIs and internal logging.
+- Avoid repeating preserved facts already present in the compacted body and do
+  not cut individual code/diff snippets mid-block.
+
 ## 0.6.5
 
 - Collapse planning into `docs/plan/README.md` as the only source of truth and
